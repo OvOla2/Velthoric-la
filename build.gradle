@@ -47,20 +47,20 @@ subprojects {
             parchment("org.parchmentmc.data:parchment-1.20.2:2023.10.08@zip")
         }
 
-        implementation("com.github.stephengold:jolt-jni-Linux64:${jolt_jni_version}")
-        implementation("com.github.stephengold:jolt-jni-Windows64:${jolt_jni_version}:DebugDp")
-        implementation("com.github.stephengold:jolt-jni-Linux64:${jolt_jni_version}:DebugDp")
-        implementation("com.github.stephengold:jolt-jni-Linux_ARM64:${jolt_jni_version}:DebugDp")
-        implementation("com.github.stephengold:jolt-jni-MacOSX64:${jolt_jni_version}:DebugDp")
-        implementation("com.github.stephengold:jolt-jni-MacOSX_ARM64:${jolt_jni_version}:DebugDp")
+        //implementation("com.github.stephengold:jolt-jni-Linux64:${jolt_jni_version}")
+        //implementation("com.github.stephengold:jolt-jni-Windows64:${jolt_jni_version}:DebugDp")
+        //implementation("com.github.stephengold:jolt-jni-Linux64:${jolt_jni_version}:DebugDp")
+        //implementation("com.github.stephengold:jolt-jni-Linux_ARM64:${jolt_jni_version}:DebugDp")
+        //implementation("com.github.stephengold:jolt-jni-MacOSX64:${jolt_jni_version}:DebugDp")
+        //implementation("com.github.stephengold:jolt-jni-MacOSX_ARM64:${jolt_jni_version}:DebugDp")
 
-        minecraftRuntimeLibraries("com.github.stephengold:jolt-jni-Linux64:${jolt_jni_version}")
-        minecraftRuntimeLibraries("com.github.stephengold:jolt-jni-Windows64:${jolt_jni_version}:DebugDp")
-        minecraftRuntimeLibraries("com.github.stephengold:jolt-jni-Linux64:${jolt_jni_version}:DebugDp")
-        minecraftRuntimeLibraries("com.github.stephengold:jolt-jni-Linux_ARM64:${jolt_jni_version}:DebugDp")
-        minecraftRuntimeLibraries("com.github.stephengold:jolt-jni-MacOSX64:${jolt_jni_version}:DebugDp")
-        minecraftRuntimeLibraries("com.github.stephengold:jolt-jni-MacOSX_ARM64:${jolt_jni_version}:DebugDp")
-
+        //minecraftRuntimeLibraries("com.github.stephengold:jolt-jni-Linux64:${jolt_jni_version}")
+        //minecraftRuntimeLibraries("com.github.stephengold:jolt-jni-Windows64:${jolt_jni_version}:DebugDp")
+        //minecraftRuntimeLibraries("com.github.stephengold:jolt-jni-Linux64:${jolt_jni_version}:DebugDp")
+        //minecraftRuntimeLibraries("com.github.stephengold:jolt-jni-Linux_ARM64:${jolt_jni_version}:DebugDp")
+        //minecraftRuntimeLibraries("com.github.stephengold:jolt-jni-MacOSX64:${jolt_jni_version}:DebugDp")
+        //minecraftRuntimeLibraries("com.github.stephengold:jolt-jni-MacOSX_ARM64:${jolt_jni_version}:DebugDp")
+        
         /**
          implementation(name: 'jolt-jni-2.2.1-SNAPSHOT', ext: 'jar')
          implementation(name: 'jolt-jni-2.2.1-SNAPSHOT-DebugSp', ext: 'jar')
@@ -71,6 +71,18 @@ subprojects {
          minecraftRuntimeLibraries(name: 'jolt-jni-2.2.1-SNAPSHOT', ext: 'jar')
          minecraftRuntimeLibraries(name: 'jolt-jni-2.2.1-SNAPSHOT-DebugSp', ext: 'jar')
          **/
+                
+        implementation(name: 'jolt-jni-Linux_LoongArch64-3.4.1-SNAPSHOT', ext: 'jar')
+        implementation(name: 'jolt-jni-Linux_LoongArch64-3.4.1-SNAPSHOT-DebugDp', ext: 'jar')
+        implementation(name: 'jolt-jni-Linux_LoongArch64-3.4.1-SNAPSHOT-DebugSp', ext: 'jar')
+        implementation(name: 'jolt-jni-Linux_LoongArch64-3.4.1-SNAPSHOT-ReleaseDp', ext: 'jar')
+        implementation(name: 'jolt-jni-Linux_LoongArch64-3.4.1-SNAPSHOT-ReleaseSp', ext: 'jar')
+      
+        minecraftRuntimeLibraries(name: 'jolt-jni-Linux_LoongArch64-3.4.1-SNAPSHOT', ext: 'jar')
+        minecraftRuntimeLibraries(name: 'jolt-jni-Linux_LoongArch64-3.4.1-SNAPSHOT-DebugDp', ext: 'jar')
+        minecraftRuntimeLibraries(name: 'jolt-jni-Linux_LoongArch64-3.4.1-SNAPSHOT-DebugSp', ext: 'jar')
+        minecraftRuntimeLibraries(name: 'jolt-jni-Linux_LoongArch64-3.4.1-SNAPSHOT-ReleaseDp', ext: 'jar')
+        minecraftRuntimeLibraries(name: 'jolt-jni-Linux_LoongArch64-3.4.1-SNAPSHOT-ReleaseSp', ext: 'jar')
     }
 
     java {
@@ -100,9 +112,7 @@ subprojects {
 
 task generateJoltDoc {
 
-    def joltModule = configurations.detachedConfiguration(
-            dependencies.create("com.github.stephengold:jolt-jni-Linux64:${jolt_jni_version}")
-    ).singleFile
+    def joltModule = file("$rootDir/libraries/jolt-jni-Linux_LoongArch64-3.4.1-SNAPSHOT.jar")
 
     def outputFile = file("$buildDir/docs/jolt.txt")
 
