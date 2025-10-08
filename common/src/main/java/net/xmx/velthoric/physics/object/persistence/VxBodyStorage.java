@@ -11,7 +11,6 @@ import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.xmx.velthoric.init.VxMainClass;
-import net.xmx.velthoric.math.VxTransform;
 import net.xmx.velthoric.network.VxByteBuf;
 import net.xmx.velthoric.physics.object.manager.VxObjectDataStore;
 import net.xmx.velthoric.physics.object.manager.VxObjectManager;
@@ -20,14 +19,12 @@ import net.xmx.velthoric.physics.persistence.VxAbstractRegionStorage;
 import net.xmx.velthoric.physics.persistence.VxRegionIndex;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.stream.Collectors;
 
 /**
  * Manages the persistent storage of physics objects on disk using a region-based file system.
@@ -37,17 +34,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * @author xI-Mx-Ix
  */
 public class VxBodyStorage extends VxAbstractRegionStorage<UUID, byte[]> {
-    // Note: The SerializedBodyData record can now be moved inside VxBodyCodec if preferred,
-    // or kept here for clarity. It is kept here for this example.
-    public record SerializedBodyData(
-            net.minecraft.resources.ResourceLocation typeId,
-            UUID id,
-            VxTransform transform,
-            com.github.stephengold.joltjni.Vec3 linearVelocity,
-            com.github.stephengold.joltjni.Vec3 angularVelocity,
-            VxByteBuf persistenceData
-    ) {}
-
     private final VxObjectManager objectManager;
     private final VxObjectDataStore dataStore;
     private final ConcurrentMap<Long, List<UUID>> chunkToUuidIndex = new ConcurrentHashMap<>();
@@ -84,30 +70,49 @@ public class VxBodyStorage extends VxAbstractRegionStorage<UUID, byte[]> {
         }
     }
 
+    /**
+     * Stores a collection of objects by grouping them by region and saving each region in a single batch operation.
+     * This is much more efficient than saving each object individually.
+     *
+     * @param objects The collection of VxBody objects to store.
+     */
     public void storeObjects(Collection<VxBody> objects) {
-        for (VxBody object : objects) {
-            storeObject(object);
-        }
+        if (objects == null || objects.isEmpty()) return;
+
+        Map<RegionPos, List<VxBody>> objectsByRegion = objects.stream()
+                .filter(Objects::nonNull)
+                .filter(obj -> obj.getInternalBody().getDataStoreIndex() != -1)
+                .collect(Collectors.groupingBy(obj -> {
+                    ChunkPos chunkPos = objectManager.getObjectChunkPos(obj.getInternalBody().getDataStoreIndex());
+                    return new RegionPos(chunkPos.x >> 5, chunkPos.z >> 5);
+                }));
+
+        objectsByRegion.forEach((regionPos, regionObjects) -> {
+            getRegion(regionPos).thenAcceptAsync(region -> {
+                for (VxBody object : regionObjects) {
+                    int index = object.getInternalBody().getDataStoreIndex();
+                    if (index == -1) continue; // Should already be filtered, but as a safeguard
+
+                    byte[] data = serializeObjectData(object, index);
+                    region.entries.put(object.getPhysicsId(), data);
+                    regionIndex.put(object.getPhysicsId(), regionPos);
+                    indexObjectData(object.getPhysicsId(), data);
+                }
+                region.dirty.set(true);
+            }, ioExecutor).exceptionally(ex -> {
+                VxMainClass.LOGGER.error("Failed to store object batch in region {}", regionPos, ex);
+                return null;
+            });
+        });
     }
 
+    /**
+     * Stores a single object. For performance, prefer using storeObjects for multiple objects.
+     * @param object The object to store.
+     */
     public void storeObject(VxBody object) {
-        if (object == null) return;
-        int index = object.getDataStoreIndex();
-        if (index == -1) return;
-
-        byte[] data = serializeObjectData(object, index);
-        ChunkPos chunkPos = objectManager.getObjectChunkPos(index);
-        RegionPos regionPos = new RegionPos(chunkPos.x >> 5, chunkPos.z >> 5);
-
-        getRegion(regionPos).thenAcceptAsync(region -> {
-            region.entries.put(object.getPhysicsId(), data);
-            region.dirty.set(true);
-            regionIndex.put(object.getPhysicsId(), regionPos);
-            indexObjectData(object.getPhysicsId(), data);
-        }, ioExecutor).exceptionally(ex -> {
-            VxMainClass.LOGGER.error("Failed to store object {}", object.getPhysicsId(), ex);
-            return null;
-        });
+        if (object == null || object.getInternalBody().getDataStoreIndex() == -1) return;
+        storeObjects(Collections.singletonList(object));
     }
 
     public void loadObjectsInChunk(ChunkPos chunkPos) {
@@ -185,13 +190,13 @@ public class VxBodyStorage extends VxAbstractRegionStorage<UUID, byte[]> {
     }
 
     /**
-     * Deserializes a raw byte array into a structured {@link SerializedBodyData} object using the VxBodyCodec.
+     * Deserializes a raw byte array into a structured {@link VxSerializedBodyData} object using the VxBodyCodec.
      *
      * @param data The raw byte data from storage.
      * @return The deserialized data, or null on failure.
      */
     @Nullable
-    private SerializedBodyData deserializeObject(byte[] data) {
+    private VxSerializedBodyData deserializeObject(byte[] data) {
         if (data == null) return null;
         VxByteBuf buf = new VxByteBuf(Unpooled.wrappedBuffer(data));
         try {
@@ -246,13 +251,14 @@ public class VxBodyStorage extends VxAbstractRegionStorage<UUID, byte[]> {
         try {
             // This part still needs to partially read the data to find the position for indexing.
             // This is acceptable as it's a storage-level concern.
-            buf.readUUID();
-            buf.readUtf();
-            VxTransform tempTransform = new VxTransform();
-            tempTransform.fromBuffer(buf);
-            var translation = tempTransform.getTranslation();
-            int chunkX = SectionPos.posToSectionCoord(translation.xx());
-            int chunkZ = SectionPos.posToSectionCoord(translation.zz());
+            buf.readUUID(); // Skip ID
+            buf.readUtf(); // Skip Type ID
+            // Read position directly instead of creating a full transform object
+            double posX = buf.readDouble();
+            buf.readDouble(); // Skip posY
+            double posZ = buf.readDouble();
+            int chunkX = SectionPos.posToSectionCoord(posX);
+            int chunkZ = SectionPos.posToSectionCoord(posZ);
             return new ChunkPos(chunkX, chunkZ).toLong();
         } finally {
             if (buf.refCnt() > 0) {

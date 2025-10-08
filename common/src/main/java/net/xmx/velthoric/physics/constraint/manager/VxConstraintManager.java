@@ -7,6 +7,7 @@ package net.xmx.velthoric.physics.constraint.manager;
 import com.github.stephengold.joltjni.*;
 import com.github.stephengold.joltjni.enumerate.EConstraintSpace;
 import com.github.stephengold.joltjni.std.StringStream;
+import net.minecraft.world.level.ChunkPos;
 import net.xmx.velthoric.init.VxMainClass;
 import net.xmx.velthoric.physics.constraint.VxConstraint;
 import net.xmx.velthoric.physics.constraint.persistence.VxConstraintStorage;
@@ -16,6 +17,8 @@ import net.xmx.velthoric.physics.world.VxPhysicsWorld;
 import org.jetbrains.annotations.Nullable;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -45,16 +48,62 @@ public class VxConstraintManager {
         constraintStorage.initialize();
     }
 
-    public void saveData() {
-        activeConstraints.values().forEach(constraintStorage::storeConstraint);
-        constraintStorage.saveDirtyRegions();
-    }
-
+    /**
+     * Cleans up resources on shutdown. Saving is handled by Minecraft's chunk saving mechanism.
+     */
     public void shutdown() {
-        saveData();
         activeConstraints.clear();
         dataSystem.clear();
         constraintStorage.shutdown();
+    }
+
+    /**
+     * Saves all constraints associated with a given chunk using a single batch operation.
+     * A constraint is considered to be in a chunk if its first body is in that chunk.
+     *
+     * @param pos The position of the chunk.
+     */
+    public void saveConstraintsInChunk(ChunkPos pos) {
+        long chunkKey = pos.toLong();
+        List<VxConstraint> constraintsToSave = new ArrayList<>();
+        for (VxConstraint constraint : activeConstraints.values()) {
+            VxBody body1 = objectManager.getObject(constraint.getBody1Id());
+            if (body1 != null) {
+                int index = body1.getInternalBody().getDataStoreIndex();
+                if (index != -1 && objectManager.getDataStore().chunkKey[index] == chunkKey) {
+                    constraintsToSave.add(constraint);
+                }
+            }
+        }
+        if (!constraintsToSave.isEmpty()) {
+            constraintStorage.storeConstraints(constraintsToSave);
+        }
+    }
+
+    /**
+     * Handles the unloading of all constraints within a specific chunk.
+     * This removes the constraints from the active simulation.
+     *
+     * @param pos The position of the chunk being unloaded.
+     */
+    public void onChunkUnload(ChunkPos pos) {
+        List<UUID> toRemove = new ArrayList<>();
+        long chunkKey = pos.toLong();
+
+        for (VxConstraint constraint : activeConstraints.values()) {
+            VxBody body1 = objectManager.getObject(constraint.getBody1Id());
+            if (body1 != null) {
+                int index = body1.getInternalBody().getDataStoreIndex();
+                if (index != -1 && objectManager.getDataStore().chunkKey[index] == chunkKey) {
+                    toRemove.add(constraint.getConstraintId());
+                }
+            }
+        }
+
+        for (UUID id : toRemove) {
+            // Remove from simulation, but do not discard the data from storage.
+            removeConstraint(id, false);
+        }
     }
 
     /**
@@ -95,7 +144,7 @@ public class VxConstraintManager {
             VxBody body1 = objectManager.getObject(constraint.getBody1Id());
             VxBody body2 = objectManager.getObject(constraint.getBody2Id());
 
-            if (body1 == null || body2 == null || body1.getBodyId() == 0 || body2.getBodyId() == 0) {
+            if (body1 == null || body2 == null || body1.getInternalBody().getBodyId() == 0 || body2.getInternalBody().getBodyId() == 0) {
                 dataSystem.addPendingConstraint(constraint);
                 return;
             }
@@ -109,7 +158,7 @@ public class VxConstraintManager {
                 boolean wasCreatedWithWorldSpace = getConstraintSpace(loadedSettings) == EConstraintSpace.WorldSpace;
 
                 TwoBodyConstraint joltConstraint = world.getBodyInterface()
-                        .createConstraint(loadedSettings, body1.getBodyId(), body2.getBodyId());
+                        .createConstraint(loadedSettings, body1.getInternalBody().getBodyId(), body2.getInternalBody().getBodyId());
 
                 if (joltConstraint == null) {
                     VxMainClass.LOGGER.error("Failed to create Jolt constraint for {}", constraint.getConstraintId());
