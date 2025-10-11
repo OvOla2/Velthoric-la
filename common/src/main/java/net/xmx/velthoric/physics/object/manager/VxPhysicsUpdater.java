@@ -15,7 +15,9 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.xmx.velthoric.physics.object.type.VxBody;
 import net.xmx.velthoric.physics.object.type.VxSoftBody;
-import net.xmx.velthoric.physics.object.type.internal.VxInternalBody;
+import net.xmx.velthoric.physics.object.type.internal.VxBodyHandle;
+import net.xmx.velthoric.physics.terrain.VxSectionPos;
+import net.xmx.velthoric.physics.terrain.VxTerrainSystem;
 import net.xmx.velthoric.physics.world.VxPhysicsWorld;
 import org.jetbrains.annotations.Nullable;
 
@@ -43,6 +45,8 @@ public class VxPhysicsUpdater {
     private final ThreadLocal<Quat> tempRot = ThreadLocal.withInitial(Quat::new);
     private final ThreadLocal<Vec3> tempLinVel = ThreadLocal.withInitial(Vec3::new);
     private final ThreadLocal<Vec3> tempAngVel = ThreadLocal.withInitial(Vec3::new);
+    private final ThreadLocal<VxSectionPos> tempSectionPos = ThreadLocal.withInitial(VxSectionPos::new);
+
 
     public VxPhysicsUpdater(VxObjectManager manager) {
         this.manager = manager;
@@ -73,14 +77,65 @@ public class VxPhysicsUpdater {
     private void update(long timestampNanos, VxPhysicsWorld world) {
         final BodyInterface bodyInterface = world.getPhysicsSystem().getBodyInterfaceNoLock();
 
-        // Phase 1: Pre-Update Sync (Game State -> Jolt)
+        // Phase 1: Activate bodies waiting for terrain to be ready.
+        processAwaitingActivation(world, bodyInterface);
+
+        // Phase 2: Pre-Update Sync (Game State -> Jolt)
         preUpdateSync(bodyInterface);
 
-        // Phase 2: Step the Physics Simulation (handled externally)
+        // Phase 3: Step the Physics Simulation (handled externally)
 
-        // Phase 3: Post-Update Sync (Jolt -> Game State)
+        // Phase 4: Post-Update Sync (Jolt -> Game State)
         postUpdateSync(timestampNanos, world, bodyInterface);
     }
+
+    /**
+     * Scans for bodies that are waiting for terrain to become ready and activates them.
+     * This is a critical step to ensure bodies interact with the world correctly after spawning.
+     *
+     * @param world The physics world, used to access the terrain system.
+     * @param bodyInterface The Jolt body interface for activating bodies.
+     */
+    private void processAwaitingActivation(VxPhysicsWorld world, BodyInterface bodyInterface) {
+        VxTerrainSystem terrainSystem = world.getTerrainSystem();
+        if (terrainSystem == null) return;
+
+        for (int i = 0; i < dataStore.getCapacity(); ++i) {
+            if (dataStore.isAwaitingActivation[i]) {
+                final UUID id = dataStore.getIdForIndex(i);
+                if (id == null) {
+                    dataStore.isAwaitingActivation[i] = false;
+                    continue;
+                }
+
+                final VxBody body = manager.getObject(id);
+                if (body != null) {
+                    final int bodyId = body.getBodyHandle().getBodyId();
+                    if (bodyId != 0 && bodyInterface.isAdded(bodyId)) {
+                        tempSectionPos.set(new VxSectionPos(
+                                SectionPos.posToSectionCoord(dataStore.posX[i]),
+                                SectionPos.posToSectionCoord(dataStore.posY[i]),
+                                SectionPos.posToSectionCoord(dataStore.posZ[i])
+                        ));
+
+                        VxSectionPos pos = tempSectionPos.get();
+
+                        if (terrainSystem.isReady(pos)) {
+                            bodyInterface.activateBody(bodyId);
+                            dataStore.isAwaitingActivation[i] = false;
+                        }
+                    } else {
+                        // The body doesn't exist in Jolt yet or was removed, so stop waiting.
+                        dataStore.isAwaitingActivation[i] = false;
+                    }
+                } else {
+                    // The body no longer exists in the manager, so stop waiting.
+                    dataStore.isAwaitingActivation[i] = false;
+                }
+            }
+        }
+    }
+
 
     /**
      * Scans for objects marked as dirty by the game logic and applies their
@@ -97,7 +152,7 @@ public class VxPhysicsUpdater {
 
                 final VxBody body = manager.getObject(id);
                 if (body != null) {
-                    final int bodyId = body.getInternalBody().getBodyId();
+                    final int bodyId = body.getBodyHandle().getBodyId();
                     if (bodyId != 0 && bodyInterface.isAdded(bodyId)) {
                         final RVec3 pos = tempPos.get();
                         pos.set(dataStore.posX[i], dataStore.posY[i], dataStore.posZ[i]);
@@ -133,7 +188,7 @@ public class VxPhysicsUpdater {
             VxBody obj = manager.getObject(id);
             if (obj == null) continue;
 
-            VxInternalBody internalBody = obj.getInternalBody();
+            VxBodyHandle internalBody = obj.getBodyHandle();
             int bodyId = internalBody.getBodyId();
             if (bodyId == 0 || !bodyInterface.isAdded(bodyId)) continue;
 
@@ -184,7 +239,7 @@ public class VxPhysicsUpdater {
                 final long lastKey = dataStore.chunkKey[i];
                 final long currentKey = new ChunkPos(SectionPos.posToSectionCoord(pos.x()), SectionPos.posToSectionCoord(pos.z())).toLong();
                 if (lastKey != currentKey) {
-                    manager.updateObjectTracking(obj, lastKey, currentKey);
+                    manager.getChunkManager().updateObjectTracking(obj, lastKey, currentKey);
                 }
 
                 dataStore.isTransformDirty[i] = true;
