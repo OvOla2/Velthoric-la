@@ -8,7 +8,7 @@ import java.util.Locale;
 
 enum Arch {
         X86_64("x86-64"),
-        AARCH64("aarch64");
+        AARCH64("aarch64"),
         LOONGARCH64("loongarch64");
         
         final String folder;
