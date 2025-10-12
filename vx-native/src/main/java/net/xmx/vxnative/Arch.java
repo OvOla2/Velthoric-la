@@ -18,6 +18,7 @@ enum Arch {
             String archName = System.getProperty("os.arch", "generic").toLowerCase(Locale.ROOT);
             if (archName.equals("x86_64") || archName.equals("amd64")) return X86_64;
             if (archName.equals("aarch64") || archName.equals("arm64")) return AARCH64;
+            if (archName.equals("loongarch64") || archName.equals("loong64")) return LOONGARCH64;
             return null;
         }
     }
