@@ -119,10 +119,12 @@ subprojects {
 
 task generateJoltDoc {
 
-    def joltModule = configurations.detachedConfiguration(
-            dependencies.create("com.github.stephengold:jolt-jni-Linux64:${jolt_jni_version}")
-    ).singleFile
-
+    //def joltModule = configurations.detachedConfiguration(
+    //        dependencies.create("com.github.stephengold:jolt-jni-Linux64:${jolt_jni_version}")
+    //).singleFile
+    
+// using localhost JAR file
+    def joltModule = file("$rootDir/libraries/jolt-jni-Linux_LoongArch64-3.4.1-SNAPSHOT.jar")
     def outputFile = file("$buildDir/docs/jolt.txt")
 
     inputs.file(joltModule)
