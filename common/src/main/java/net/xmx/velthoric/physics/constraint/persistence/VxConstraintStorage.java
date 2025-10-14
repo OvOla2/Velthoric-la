@@ -12,12 +12,11 @@ import net.minecraft.world.level.ChunkPos;
 import net.xmx.velthoric.init.VxMainClass;
 import net.xmx.velthoric.physics.constraint.VxConstraint;
 import net.xmx.velthoric.physics.constraint.manager.VxConstraintManager;
-import net.xmx.velthoric.physics.object.type.VxBody;
+import net.xmx.velthoric.physics.body.type.VxBody;
 import net.xmx.velthoric.physics.persistence.VxAbstractRegionStorage;
 import net.xmx.velthoric.physics.persistence.VxRegionIndex;
 
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -25,8 +24,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 /**
  * Manages persistent storage for physics constraints.
  * This class handles serialization, deserialization, and asynchronous loading/saving
- * of constraint data using a region-based file system. It uses a codec to separate
- * serialization logic from storage management.
+ * of constraint data using a region-based file system.
  *
  * @author xI-Mx-Ix
  */
@@ -67,6 +65,7 @@ public class VxConstraintStorage extends VxAbstractRegionStorage<UUID, byte[]> {
 
     /**
      * Stores a collection of constraints by grouping them by region and saving each region in a single batch operation.
+     * The region is determined by the chunk position of one of the constraint's bodies.
      *
      * @param constraints The constraints to store.
      */
@@ -76,11 +75,21 @@ public class VxConstraintStorage extends VxAbstractRegionStorage<UUID, byte[]> {
         Map<RegionPos, List<VxConstraint>> constraintsByRegion = new HashMap<>();
         for (VxConstraint constraint : constraints) {
             if (constraint == null) continue;
-            VxBody body1 = constraintManager.getObjectManager().getObject(constraint.getBody1Id());
-            if (body1 != null) {
-                int index = body1.getDataStoreIndex();
+
+            // Determine the body to use for chunk lookup. For world constraints, use the single real body.
+            UUID chunkBodyId = !constraint.getBody1Id().equals(VxConstraintManager.WORLD_BODY_ID)
+                    ? constraint.getBody1Id()
+                    : constraint.getBody2Id();
+
+            if (chunkBodyId.equals(VxConstraintManager.WORLD_BODY_ID)) {
+                continue; // Cannot store a constraint that has no real bodies.
+            }
+
+            VxBody chunkBody = constraintManager.getBodyManager().getVxBody(chunkBodyId);
+            if (chunkBody != null) {
+                int index = chunkBody.getDataStoreIndex();
                 if (index == -1) continue;
-                ChunkPos chunkPos = constraintManager.getObjectManager().getObjectChunkPos(index);
+                ChunkPos chunkPos = constraintManager.getBodyManager().getBodyChunkPos(index);
                 RegionPos regionPos = new RegionPos(chunkPos.x >> 5, chunkPos.z >> 5);
                 constraintsByRegion.computeIfAbsent(regionPos, k -> new ArrayList<>()).add(constraint);
             }
@@ -89,10 +98,13 @@ public class VxConstraintStorage extends VxAbstractRegionStorage<UUID, byte[]> {
         constraintsByRegion.forEach((regionPos, regionConstraints) -> {
             getRegion(regionPos).thenAcceptAsync(region -> {
                 for (VxConstraint constraint : regionConstraints) {
-                    VxBody body1 = constraintManager.getObjectManager().getObject(constraint.getBody1Id());
-                    if (body1 == null || body1.getDataStoreIndex() == -1) continue;
+                    UUID chunkBodyId = !constraint.getBody1Id().equals(VxConstraintManager.WORLD_BODY_ID) ? constraint.getBody1Id() : constraint.getBody2Id();
+                    if (chunkBodyId.equals(VxConstraintManager.WORLD_BODY_ID)) continue;
 
-                    ChunkPos chunkPos = constraintManager.getObjectManager().getObjectChunkPos(body1.getDataStoreIndex());
+                    VxBody chunkBody = constraintManager.getBodyManager().getVxBody(chunkBodyId);
+                    if (chunkBody == null || chunkBody.getDataStoreIndex() == -1) continue;
+
+                    ChunkPos chunkPos = constraintManager.getBodyManager().getBodyChunkPos(chunkBody.getDataStoreIndex());
                     byte[] data = serializeConstraintData(constraint, chunkPos);
                     region.entries.put(constraint.getConstraintId(), data);
                     regionIndex.put(constraint.getConstraintId(), regionPos);
@@ -143,24 +155,18 @@ public class VxConstraintStorage extends VxAbstractRegionStorage<UUID, byte[]> {
      */
     public void loadConstraint(UUID id) {
         RegionPos regionPos = regionIndex.get(id);
-        if (regionPos == null) {
-            // Silently return if no index entry exists.
-            return;
-        }
+        if (regionPos == null) return;
 
         getRegion(regionPos)
                 .thenApplyAsync(region -> {
                     byte[] data = region.entries.get(id);
-                    if (data != null) {
-                        return deserializeConstraint(id, data);
-                    }
-                    return null;
+                    return data != null ? deserializeConstraint(id, data) : null;
                 }, ioExecutor)
                 .thenAcceptAsync(constraint -> {
                     if (constraint != null) {
                         constraintManager.addConstraintFromStorage(constraint);
                     }
-                }, level.getServer()) // Schedule on the main server thread
+                }, level.getServer())
                 .exceptionally(ex -> {
                     VxMainClass.LOGGER.error("Exception loading physics constraint {}", id, ex);
                     return null;
@@ -191,10 +197,6 @@ public class VxConstraintStorage extends VxAbstractRegionStorage<UUID, byte[]> {
 
     /**
      * Deserializes constraint data from a byte array using the VxConstraintCodec.
-     *
-     * @param id   The UUID of the constraint.
-     * @param data The raw byte data.
-     * @return The deserialized VxConstraint, or null on failure.
      */
     private VxConstraint deserializeConstraint(UUID id, byte[] data) {
         FriendlyByteBuf buf = new FriendlyByteBuf(Unpooled.wrappedBuffer(data));
@@ -202,18 +204,12 @@ public class VxConstraintStorage extends VxAbstractRegionStorage<UUID, byte[]> {
             buf.readLong(); // Skip chunk key, which is storage-specific metadata.
             return VxConstraintCodec.deserialize(id, buf);
         } finally {
-            if (buf.refCnt() > 0) {
-                buf.release();
-            }
+            if (buf.refCnt() > 0) buf.release();
         }
     }
 
     /**
      * Serializes a constraint into a byte array using the VxConstraintCodec.
-     *
-     * @param constraint The constraint to serialize.
-     * @param pos        The chunk position, used as storage-specific metadata.
-     * @return The serialized byte array.
      */
     private byte[] serializeConstraintData(VxConstraint constraint, ChunkPos pos) {
         ByteBuf buffer = Unpooled.buffer();
@@ -221,14 +217,11 @@ public class VxConstraintStorage extends VxAbstractRegionStorage<UUID, byte[]> {
         try {
             buf.writeLong(pos.toLong()); // Write storage-specific metadata first.
             VxConstraintCodec.serialize(constraint, buf);
-
             byte[] data = new byte[buffer.readableBytes()];
             buffer.readBytes(data);
             return data;
         } finally {
-            if (buffer.refCnt() > 0) {
-                buffer.release();
-            }
+            if (buffer.refCnt() > 0) buffer.release();
         }
     }
 
@@ -253,9 +246,7 @@ public class VxConstraintStorage extends VxAbstractRegionStorage<UUID, byte[]> {
         try {
             return buf.readLong();
         } finally {
-            if (buf.refCnt() > 0) {
-                buf.release();
-            }
+            if (buf.refCnt() > 0) buf.release();
         }
     }
 }

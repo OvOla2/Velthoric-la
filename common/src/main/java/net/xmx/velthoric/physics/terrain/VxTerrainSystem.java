@@ -116,7 +116,7 @@ public final class VxTerrainSystem implements Runnable {
     }
 
     /**
-     * The main loop for the terrain system worker thread. Periodically updates object trackers
+     * The main loop for the terrain system worker thread. Periodically updates body trackers
      * and processes chunks that need to be rebuilt.
      */
     @Override
@@ -151,7 +151,7 @@ public final class VxTerrainSystem implements Runnable {
         }
 
         physicsWorld.execute(() -> {
-            BodyInterface bi = physicsWorld.getBodyInterface();
+            BodyInterface bi = physicsWorld.getPhysicsSystem().getBodyInterface();
             if (bi == null) return;
 
             VxUpdateContext ctx = updateContext.get();

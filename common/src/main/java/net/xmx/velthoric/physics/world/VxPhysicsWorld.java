@@ -6,9 +6,6 @@ package net.xmx.velthoric.physics.world;
 
 import com.github.stephengold.joltjni.*;
 import com.github.stephengold.joltjni.enumerate.EPhysicsUpdateError;
-import com.github.stephengold.joltjni.readonly.ConstBodyLockInterfaceLocking;
-import com.github.stephengold.joltjni.readonly.ConstBodyLockInterfaceNoLock;
-import com.github.stephengold.joltjni.readonly.ConstNarrowPhaseQuery;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.util.FrameTimer;
@@ -17,7 +14,7 @@ import net.xmx.velthoric.init.VxMainClass;
 import net.xmx.velthoric.natives.VxNativeJolt;
 import net.xmx.velthoric.physics.constraint.manager.VxConstraintManager;
 import net.xmx.velthoric.physics.buoyancy.VxBuoyancyManager;
-import net.xmx.velthoric.physics.object.manager.VxObjectManager;
+import net.xmx.velthoric.physics.body.manager.VxBodyManager;
 import net.xmx.velthoric.physics.mounting.manager.VxMountingManager;
 import net.xmx.velthoric.physics.terrain.VxTerrainSystem;
 import net.xmx.velthoric.physics.world.pcmd.ICommand;
@@ -38,7 +35,7 @@ import java.util.concurrent.Executor;
  * Manages the entire physics simulation for a single Minecraft dimension.
  * Each instance runs its own dedicated thread to perform physics calculations,
  * keeping the simulation decoupled from the main server tick rate. It handles the
- * Jolt Physics System lifecycle, manages subsystems like objects and terrain, and
+ * Jolt Physics System lifecycle, manages subsystems like bodies and terrain, and
  * provides a thread-safe command queue for interacting with the simulation.
  *
  * @author xI-Mx-Ix
@@ -52,7 +49,7 @@ public final class VxPhysicsWorld implements Runnable, Executor {
 
     private final ServerLevel level;
     private final ResourceKey<Level> dimensionKey;
-    private final VxObjectManager objectManager;
+    private final VxBodyManager bodyManager;
     private final VxConstraintManager constraintManager;
     private final VxTerrainSystem terrainSystem;
     private final VxMountingManager mountingManager;
@@ -67,15 +64,14 @@ public final class VxPhysicsWorld implements Runnable, Executor {
     private final Queue<ICommand> commandQueue = new ConcurrentLinkedQueue<>();
     private volatile Thread physicsThreadExecutor;
     private volatile boolean isRunning = false;
-    private volatile boolean isPaused = false;
     private float timeAccumulator = 0.0f;
     private long lastTimeNanos = 0L;
 
     private VxPhysicsWorld(ServerLevel level) {
         this.level = level;
         this.dimensionKey = level.dimension();
-        this.objectManager = new VxObjectManager(this);
-        this.constraintManager = new VxConstraintManager(this.objectManager);
+        this.bodyManager = new VxBodyManager(this);
+        this.constraintManager = new VxConstraintManager(this.bodyManager);
         this.terrainSystem = new VxTerrainSystem(this, this.level);
         this.mountingManager = new VxMountingManager(this);
         this.buoyancyManager = new VxBuoyancyManager(this);
@@ -111,7 +107,7 @@ public final class VxPhysicsWorld implements Runnable, Executor {
             return;
         }
 
-        this.objectManager.initialize();
+        this.bodyManager.initialize();
         this.constraintManager.initialize();
         this.terrainSystem.initialize();
 
@@ -149,12 +145,6 @@ public final class VxPhysicsWorld implements Runnable, Executor {
                 processCommandQueue();
 
                 long currentTimeNanos = System.nanoTime();
-                if (this.isPaused) {
-                    this.lastTimeNanos = currentTimeNanos;
-                    Thread.sleep(10);
-                    continue;
-                }
-
                 float deltaTime = (currentTimeNanos - this.lastTimeNanos) / 1_000_000_000.0f;
                 this.lastTimeNanos = currentTimeNanos;
 
@@ -174,7 +164,7 @@ public final class VxPhysicsWorld implements Runnable, Executor {
     }
 
     private void updatePhysicsLoop(float deltaTime) {
-        if (this.isPaused || !this.isRunning || this.physicsSystem == null) {
+        if (VxPauseUtil.isPaused() || !this.isRunning || this.physicsSystem == null) {
             return;
         }
 
@@ -202,12 +192,12 @@ public final class VxPhysicsWorld implements Runnable, Executor {
 
 
     public void onPhysicsTick() {
-        this.objectManager.onPhysicsTick(this);
+        this.bodyManager.onPhysicsTick(this);
         this.buoyancyManager.applyBuoyancyForces(FIXED_TIME_STEP);
     }
 
     public void onGameTick(ServerLevel level) {
-        this.objectManager.onGameTick(level);
+        this.bodyManager.onGameTick(level);
         this.mountingManager.onGameTick();
         this.buoyancyManager.updateFluidStates();
     }
@@ -230,8 +220,8 @@ public final class VxPhysicsWorld implements Runnable, Executor {
         final int maxBodies = 65536;
         final int maxBodyPairs = 65536;
         final int maxContactConstraints = 65536;
-        final int numPositionIterations = 3;
-        final int numVelocityIterations = 8;
+        final int numPositionIterations = 10;
+        final int numVelocityIterations = 15;
         final float speculativeContactDistance = 0.02f;
         final float baumgarteFactor = 0.2f;
         final float penetrationSlop = 0.001f;
@@ -273,8 +263,8 @@ public final class VxPhysicsWorld implements Runnable, Executor {
         if (this.constraintManager != null) {
             this.constraintManager.shutdown();
         }
-        if (this.objectManager != null) {
-            this.objectManager.shutdown();
+        if (this.bodyManager != null) {
+            this.bodyManager.shutdown();
         }
         if (this.buoyancyManager != null) {
             this.buoyancyManager.shutdown();
@@ -308,8 +298,8 @@ public final class VxPhysicsWorld implements Runnable, Executor {
         RunTaskCommand.queue(this, task);
     }
 
-    public VxObjectManager getObjectManager() {
-        return this.objectManager;
+    public VxBodyManager getBodyManager() {
+        return this.bodyManager;
     }
 
     public VxConstraintManager getConstraintManager() {
@@ -344,18 +334,6 @@ public final class VxPhysicsWorld implements Runnable, Executor {
         return this.isRunning && this.physicsThreadExecutor != null && this.physicsThreadExecutor.isAlive();
     }
 
-    public boolean isPaused() {
-        return this.isPaused;
-    }
-
-    public void pause() {
-        this.execute(() -> this.isPaused = true);
-    }
-
-    public void resume() {
-        this.execute(() -> this.isPaused = false);
-    }
-
     @Nullable
     public PhysicsSystem getPhysicsSystem() {
         return this.physicsSystem;
@@ -366,29 +344,9 @@ public final class VxPhysicsWorld implements Runnable, Executor {
     }
 
     @Nullable
-    public BodyInterface getBodyInterface() {
-        return this.physicsSystem != null ? this.physicsSystem.getBodyInterface() : null;
-    }
-
-    @Nullable
-    public ConstBodyLockInterfaceLocking getBodyLockInterface() {
-        return this.physicsSystem != null ? this.physicsSystem.getBodyLockInterface() : null;
-    }
-
-    @Nullable
-    public ConstBodyLockInterfaceNoLock getBodyLockInterfaceNoLock() {
-        return this.physicsSystem != null ? this.physicsSystem.getBodyLockInterfaceNoLock() : null;
-    }
-
-    @Nullable
-    public ConstNarrowPhaseQuery getNarrowPhaseQuery() {
-        return this.physicsSystem != null ? this.physicsSystem.getNarrowPhaseQuery() : null;
-    }
-
-    @Nullable
-    public static VxObjectManager getObjectManager(ResourceKey<Level> dimensionKey) {
+    public static VxBodyManager getBodyManager(ResourceKey<Level> dimensionKey) {
         VxPhysicsWorld world = get(dimensionKey);
-        return world != null ? world.getObjectManager() : null;
+        return world != null ? world.getBodyManager() : null;
     }
 
     @Nullable
