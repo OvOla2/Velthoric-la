@@ -4,19 +4,28 @@
  */
 package net.xmx.velthoric.physics.vehicle;
 
-import com.github.stephengold.joltjni.*;
+import com.github.stephengold.joltjni.Body;
+import com.github.stephengold.joltjni.Quat;
+import com.github.stephengold.joltjni.RVec3;
+import com.github.stephengold.joltjni.VehicleCollisionTester;
+import com.github.stephengold.joltjni.VehicleCollisionTesterCastCylinder;
+import com.github.stephengold.joltjni.VehicleConstraint;
+import com.github.stephengold.joltjni.VehicleConstraintSettings;
+import com.github.stephengold.joltjni.Wheel;
+import com.github.stephengold.joltjni.WheelSettingsWv;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.util.Mth;
 import net.xmx.velthoric.network.VxByteBuf;
-import net.xmx.velthoric.physics.mounting.VxMountable;
-import net.xmx.velthoric.physics.body.manager.VxJoltBridge;
-import net.xmx.velthoric.physics.body.registry.VxBodyType;
 import net.xmx.velthoric.physics.body.client.VxRenderState;
+import net.xmx.velthoric.physics.body.manager.VxBodyDataStore;
+import net.xmx.velthoric.physics.body.manager.VxJoltBridge;
 import net.xmx.velthoric.physics.body.manager.VxRemovalReason;
+import net.xmx.velthoric.physics.body.registry.VxBodyType;
 import net.xmx.velthoric.physics.body.sync.VxDataAccessor;
 import net.xmx.velthoric.physics.body.sync.VxDataSerializers;
 import net.xmx.velthoric.physics.body.type.VxRigidBody;
+import net.xmx.velthoric.physics.mounting.VxMountable;
 import net.xmx.velthoric.physics.vehicle.wheel.VxWheel;
 import net.xmx.velthoric.physics.vehicle.wheel.VxWheelRenderState;
 import net.xmx.velthoric.physics.world.VxPhysicsWorld;
@@ -29,7 +38,7 @@ import java.util.UUID;
 /**
  * Abstract base class for all vehicle physics bodies. This class manages the
  * Jolt VehicleConstraint and wheels, and on the client side, handles wheel state
- * interpolation for smooth rendering.
+ * interpolation for smooth rendering. It also manages vehicle state synchronization like speed.
  *
  * @author xI-Mx-Ix
  */
@@ -42,7 +51,14 @@ public abstract class VxVehicle extends VxRigidBody implements VxMountable {
     protected VehicleConstraintSettings constraintSettings;
     protected VehicleCollisionTester collisionTester;
     protected VehicleConstraint constraint;
-    private boolean wheelsDirty = false;
+    private boolean vehicleStateDirty = false;
+
+    /**
+     * Represents the vehicle's speed in km/h.
+     * On the server, this value is calculated directly from the physics simulation each tick.
+     * On the client, this value is updated via network packets from the server to ensure synchronization.
+     */
+    protected float speedKmh = 0.0f;
 
     // --- Client-Side Fields ---
     @Environment(EnvType.CLIENT)
@@ -55,6 +71,10 @@ public abstract class VxVehicle extends VxRigidBody implements VxMountable {
 
     /**
      * Server-side constructor.
+     *
+     * @param type  The body type from the registry.
+     * @param world The physics world this body belongs to.
+     * @param id    The unique identifier for this body.
      */
     protected VxVehicle(VxBodyType<? extends VxVehicle> type, VxPhysicsWorld world, UUID id) {
         super(type, world, id);
@@ -62,6 +82,9 @@ public abstract class VxVehicle extends VxRigidBody implements VxMountable {
 
     /**
      * Client-side constructor.
+     *
+     * @param type The body type from the registry.
+     * @param id   The unique identifier for this body.
      */
     @Environment(EnvType.CLIENT)
     protected VxVehicle(VxBodyType<? extends VxVehicle> type, UUID id) {
@@ -114,13 +137,34 @@ public abstract class VxVehicle extends VxRigidBody implements VxMountable {
     @Override
     public void physicsTick(VxPhysicsWorld world) {
         super.physicsTick(world);
-        if (constraint != null && !wheels.isEmpty()) {
-            updateWheelStates();
+        if (constraint != null) {
+            int index = this.getDataStoreIndex();
+            if (index == -1) {
+                return; // Cannot update if not properly registered in the data store.
+            }
+
+            VxBodyDataStore dataStore = this.physicsWorld.getBodyManager().getDataStore();
+
+            // Calculate current speed in km/h from the body's linear velocity in the data store.
+            float vx = dataStore.velX[index];
+            float vy = dataStore.velY[index];
+            float vz = dataStore.velZ[index];
+            float speedMs = (float) Math.sqrt(vx * vx + vy * vy + vz * vz);
+            this.speedKmh = speedMs * 3.6f;
+
+            if (!wheels.isEmpty()) {
+                updateWheelStates();
+            }
+
+            // If the vehicle is active in the physics simulation, mark its state as dirty
+            // to ensure its state (like speed and wheel rotation) is sent to clients.
+            if (dataStore.isActive[index]) {
+                this.markVehicleStateDirty();
+            }
         }
     }
 
     private void updateWheelStates() {
-        boolean changed = false;
         for (int i = 0; i < wheels.size(); i++) {
             VxWheel vxWheel = wheels.get(i);
             Wheel joltWheel = constraint.getWheel(i);
@@ -129,10 +173,6 @@ public abstract class VxVehicle extends VxRigidBody implements VxMountable {
             vxWheel.setSteerAngle(joltWheel.getSteerAngle());
             vxWheel.setSuspensionLength(joltWheel.getSuspensionLength());
             vxWheel.setHasContact(joltWheel.hasContact());
-            changed = true;
-        }
-        if (changed) {
-            markWheelsDirty();
         }
     }
 
@@ -156,12 +196,23 @@ public abstract class VxVehicle extends VxRigidBody implements VxMountable {
     }
 
     /**
-     * Updates the target state for a specific wheel. This is called by the network layer
-     * when wheel state updates are received. Client-side only.
+     * Updates the target vehicle state on the client. This is called by the network layer
+     * when vehicle state updates are received from the server.
+     *
+     * @param speedKmh The new speed in kilometers per hour.
+     */
+    @Environment(EnvType.CLIENT)
+    public void updateVehicleState(float speedKmh) {
+        this.speedKmh = speedKmh;
+    }
+
+    /**
+     * Updates the target state for a specific wheel on the client. This is called by the network layer
+     * when wheel state updates are received.
      *
      * @param wheelIndex The index of the wheel to update.
-     * @param rotation The new rotation angle.
-     * @param steer The new steer angle.
+     * @param rotation   The new rotation angle.
+     * @param steer      The new steer angle.
      * @param suspension The new suspension length.
      */
     @Environment(EnvType.CLIENT)
@@ -207,28 +258,65 @@ public abstract class VxVehicle extends VxRigidBody implements VxMountable {
         }
     }
 
+    /**
+     * Gets the synchronized wheel settings. Client-side only.
+     *
+     * @return A list of wheel settings.
+     */
     @Environment(EnvType.CLIENT)
     public List<WheelSettingsWv> getWheelSettings() {
         return this.getSyncData(DATA_WHEELS_SETTINGS);
     }
 
+    /**
+     * Gets the client-side list of interpolated wheel states for rendering.
+     *
+     * @return A list of wheel render states.
+     */
     @Environment(EnvType.CLIENT)
     public List<VxWheelRenderState> getInterpolatedWheelStates() {
         return interpolatedWheelStates;
     }
 
-    public void markWheelsDirty() {
-        this.wheelsDirty = true;
+    /**
+     * Marks the vehicle's dynamic state as dirty, flagging it for network synchronization.
+     */
+    public void markVehicleStateDirty() {
+        this.vehicleStateDirty = true;
     }
 
-    public boolean areWheelsDirty() {
-        return wheelsDirty;
+    /**
+     * Checks if the vehicle's dynamic state is dirty and needs to be synchronized.
+     *
+     * @return True if the state is dirty, false otherwise.
+     */
+    public boolean isVehicleStateDirty() {
+        return vehicleStateDirty;
     }
 
-    public void clearWheelsDirty() {
-        this.wheelsDirty = false;
+    /**
+     * Clears the dirty flag for the vehicle's dynamic state.
+     */
+    public void clearVehicleStateDirty() {
+        this.vehicleStateDirty = false;
     }
 
+    /**
+     * Gets the vehicle's speed in kilometers per hour.
+     * On the server, this value is calculated from the physics simulation.
+     * On the client, this value is synchronized from the server.
+     *
+     * @return The speed in km/h.
+     */
+    public float getSpeedKmh() {
+        return this.speedKmh;
+    }
+
+    /**
+     * Gets the list of wheels attached to this vehicle.
+     *
+     * @return The list of VxWheel instances.
+     */
     public List<VxWheel> getWheels() {
         return wheels;
     }

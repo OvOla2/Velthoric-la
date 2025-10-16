@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/xI-Mx-Ix/Velthoric/refs/heads/master/assets/velthoric_icon.png" alt="Velthoric Icon" width="128" height="128">
+  <img src="https://raw.githubusercontent.com/xI-Mx-Ix/Velthoric/refs/heads/master/assets/velthoric_icon_rounded_corners.png" alt="Velthoric Icon" width="128" height="128">
 </p>
 
 <div align="center">
@@ -81,6 +81,16 @@ You can target objects by `type`, `bodytype`, `distance`, `limit`, and `sort`.
 * **Magnetizer** – Pull or push objects where you aim.
 * **BoxThrower** – Spawn and launch boxes instantly.
 * **ChainCreator** – Connect two objects (or one to the ground) with a chain.
+
+### 💻 **Supported Platforms**
+
+- Windows x86_64
+- Linux x86_64
+- Linux Arm64
+- MacOS x86_64
+- MacOS Arm64
+
+> **Note:** All other platforms (e.g., 32-bit systems, Android) are **not supported** and will **crash**.
 
 ### ⚠️ **Bug Reports & Mod Compatibility**
 
