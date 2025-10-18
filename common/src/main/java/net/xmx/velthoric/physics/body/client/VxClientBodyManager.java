@@ -9,6 +9,7 @@ import com.github.stephengold.joltjni.RVec3;
 import dev.architectury.event.events.client.ClientTickEvent;
 import io.netty.buffer.ByteBuf;
 import net.minecraft.resources.ResourceLocation;
+import net.xmx.velthoric.event.api.VxClientLevelEvent;
 import net.xmx.velthoric.event.api.VxClientPlayerNetworkEvent;
 import net.xmx.velthoric.init.VxMainClass;
 import net.xmx.velthoric.math.VxTransform;
@@ -50,7 +51,7 @@ public class VxClientBodyManager {
     // The interpolator responsible for calculating smooth body transforms.
     private final VxClientBodyInterpolator interpolator = new VxClientBodyInterpolator();
     // The client-side clock, which can be paused.
-    private final VxClientClock clock = VxClientClock.getInstance();
+    private final VxClientClock clock = VxClientClock.INSTANCE;
 
     // Map of all active client-side physics body handles.
     private final Map<UUID, VxBody> managedBodies = new ConcurrentHashMap<>();
@@ -283,6 +284,7 @@ public class VxClientBodyManager {
     public static void registerEvents() {
         ClientTickEvent.CLIENT_PRE.register(client -> INSTANCE.clientTick());
         VxClientPlayerNetworkEvent.LoggingOut.EVENT.register(event -> INSTANCE.clearAll());
+        VxClientLevelEvent.Load.EVENT.register(event -> INSTANCE.clearAll());
     }
 
     /**
