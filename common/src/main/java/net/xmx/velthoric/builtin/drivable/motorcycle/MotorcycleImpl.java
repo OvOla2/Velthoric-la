@@ -5,31 +5,29 @@
 package net.xmx.velthoric.builtin.drivable.motorcycle;
 
 import com.github.stephengold.joltjni.*;
-import com.github.stephengold.joltjni.enumerate.EMotionQuality;
-import com.github.stephengold.joltjni.enumerate.EMotionType;
-import com.github.stephengold.joltjni.enumerate.EOverrideMassProperties;
-import com.github.stephengold.joltjni.enumerate.ETransmissionMode;
+import com.github.stephengold.joltjni.enumerate.*;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.world.phys.AABB;
 import net.xmx.velthoric.natives.VxLayers;
-import net.xmx.velthoric.physics.mounting.seat.VxSeat;
 import net.xmx.velthoric.physics.body.registry.VxBodyType;
 import net.xmx.velthoric.physics.body.type.factory.VxRigidBodyFactory;
+import net.xmx.velthoric.physics.mounting.seat.VxSeat;
 import net.xmx.velthoric.physics.vehicle.type.motorcycle.VxMotorcycle;
 import net.xmx.velthoric.physics.vehicle.wheel.VxWheel;
 import net.xmx.velthoric.physics.world.VxPhysicsWorld;
 import org.joml.Vector3f;
 
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+import static com.github.stephengold.joltjni.Jolt.degreesToRadians;
+import static com.github.stephengold.joltjni.operator.Op.minus;
+
 /**
- * A concrete implementation of a motorcycle, defining its physical properties,
- * two-wheel setup, and using a MotorcycleController.
+ * A concrete implementation of a motorcycle, with physics properties tuned
+ * for stable and responsive handling.
  *
  * @author xI-Mx-Ix
  */
@@ -54,98 +52,119 @@ public class MotorcycleImpl extends VxMotorcycle {
     protected VehicleConstraintSettings createConstraintSettings() {
         this.wheels = new ArrayList<>(2);
 
-        float wheelRadius = 0.4f;
-        float wheelWidth = 0.15f;
-        float wheelBase = 1.4f;
-        float suspensionMinLength = 0.15f;
-        float suspensionMaxLength = 0.4f;
-        float suspensionFrequency = 5.0f;
-        float suspensionDamping = 0.8f;
+        final float back_wheel_radius = 0.31f;
+        final float back_wheel_width = 0.05f;
+        final float back_wheel_pos_z = -0.75f;
+        final float back_suspension_min_length = 0.3f;
+        final float back_suspension_max_length = 0.5f;
+        final float back_suspension_freq = 2.0f;
+        final float back_brake_torque = 250.0f;
 
-        WheelSettingsWv rearWheel = new WheelSettingsWv();
-        rearWheel.setPosition(new Vec3(0, 0, -wheelBase * 0.5f));
-        rearWheel.setRadius(wheelRadius);
-        rearWheel.setWidth(wheelWidth);
-        rearWheel.setSuspensionMinLength(suspensionMinLength);
-        rearWheel.setSuspensionMaxLength(suspensionMaxLength);
-        rearWheel.getSuspensionSpring().setFrequency(suspensionFrequency);
-        rearWheel.getSuspensionSpring().setDamping(suspensionDamping);
-        rearWheel.setMaxSteerAngle(0.0f);
+        final float front_wheel_radius = 0.31f;
+        final float front_wheel_width = 0.05f;
+        final float front_wheel_pos_z = 0.75f;
+        final float front_suspension_min_length = 0.3f;
+        final float front_suspension_max_length = 0.5f;
+        final float front_suspension_freq = 1.5f;
+        final float front_brake_torque = 500.0f;
 
-        WheelSettingsWv frontWheel = new WheelSettingsWv();
-        frontWheel.setPosition(new Vec3(0, 0, wheelBase * 0.5f));
-        frontWheel.setRadius(wheelRadius);
-        frontWheel.setWidth(wheelWidth);
-        frontWheel.setSuspensionMinLength(suspensionMinLength);
-        frontWheel.setSuspensionMaxLength(suspensionMaxLength);
-        frontWheel.getSuspensionSpring().setFrequency(suspensionFrequency);
-        frontWheel.getSuspensionSpring().setDamping(suspensionDamping);
-        frontWheel.setMaxSteerAngle((float) Math.toRadians(40.0));
+        final float half_vehicle_height = 0.3f;
+        final float max_steering_angle = degreesToRadians(30);
+        final float caster_angle = degreesToRadians(30);
 
-        this.wheels.add(new VxWheel(rearWheel));
-        this.wheels.add(new VxWheel(frontWheel));
+        VehicleConstraintSettings vehicle = new VehicleConstraintSettings();
+        vehicle.setMaxPitchRollAngle(degreesToRadians(60.0f));
+        vehicle.setUp(new Vec3(0f, 1f, 0f));
+
+        // --- Front Wheel ---
+        WheelSettingsWv front = new WheelSettingsWv();
+        front.setPosition(new Vec3(0.0f, -0.9f * half_vehicle_height, front_wheel_pos_z));
+        front.setMaxSteerAngle(max_steering_angle);
+        front.setSuspensionDirection(new Vec3(0, -1, (float) Math.tan(caster_angle)).normalized());
+        front.setSteeringAxis(minus(front.getSuspensionDirection()));
+        front.setRadius(front_wheel_radius);
+        front.setWidth(front_wheel_width);
+        front.setSuspensionMinLength(front_suspension_min_length);
+        front.setSuspensionMaxLength(front_suspension_max_length);
+        front.getSuspensionSpring().setFrequency(front_suspension_freq);
+        front.setMaxBrakeTorque(front_brake_torque);
+
+        // --- Rear Wheel ---
+        WheelSettingsWv back = new WheelSettingsWv();
+        back.setPosition(new Vec3(0.0f, -0.9f * half_vehicle_height, back_wheel_pos_z));
+        back.setMaxSteerAngle(0.0f);
+        back.setRadius(back_wheel_radius);
+        back.setWidth(back_wheel_width);
+        back.setSuspensionMinLength(back_suspension_min_length);
+        back.setSuspensionMaxLength(back_suspension_max_length);
+        back.getSuspensionSpring().setFrequency(back_suspension_freq);
+        back.setMaxBrakeTorque(back_brake_torque);
+
+        this.wheels.add(new VxWheel(front));
+        this.wheels.add(new VxWheel(back));
         this.setSyncData(DATA_WHEELS_SETTINGS, this.wheels.stream().map(VxWheel::getSettings).collect(Collectors.toList()));
 
-        MotorcycleControllerSettings controllerSettings = new MotorcycleControllerSettings();
-        VehicleEngineSettings engineSettings = controllerSettings.getEngine();
-        engineSettings.setMaxTorque(800.0f);
-        engineSettings.setMaxRpm(12000.0f);
-        engineSettings.setMinRpm(1000.0f);
+        vehicle.addWheels(front, back);
 
-        VehicleTransmissionSettings transmissionSettings = controllerSettings.getTransmission();
-        transmissionSettings.setMode(ETransmissionMode.Auto);
-        transmissionSettings.setGearRatios(2.9f, 2.1f, 1.6f, 1.3f, 1.1f);
-        transmissionSettings.setReverseGearRatios(-2.5f);
-        transmissionSettings.setShiftUpRpm(8000.0f);
-        transmissionSettings.setShiftDownRpm(3000.0f);
+        // --- Controller ---
+        MotorcycleControllerSettings controller = new MotorcycleControllerSettings();
+        controller.getEngine().setMaxTorque(150.0f);
+        controller.getEngine().setMinRpm(1000.0f);
+        controller.getEngine().setMaxRpm(10000.0f);
+        controller.getTransmission().setShiftDownRpm(2000.0f);
+        controller.getTransmission().setShiftUpRpm(8000.0f);
+        controller.getTransmission().setGearRatios(2.27f, 1.63f, 1.3f, 1.09f, 0.96f, 0.88f);
+        controller.getTransmission().setReverseGearRatios(-4.0f);
+        controller.getTransmission().setClutchStrength(2.0f);
+        vehicle.setController(controller);
 
-        controllerSettings.setNumDifferentials(1);
-        VehicleDifferentialSettings differential = controllerSettings.getDifferential(0);
-        differential.setLeftWheel(0);
-        differential.setRightWheel(-1);
-        differential.setDifferentialRatio(2.5f);
+        // --- Differential ---
+        controller.setNumDifferentials(1);
+        VehicleDifferentialSettings differential = controller.getDifferential(0);
+        differential.setLeftWheel(-1);
+        differential.setRightWheel(1);
+        differential.setDifferentialRatio(1.93f * 40.0f / 16.0f);
 
-        VehicleConstraintSettings settings = new VehicleConstraintSettings();
-        settings.addWheels(rearWheel, frontWheel);
-        settings.setController(controllerSettings);
-
-        return settings;
+        return vehicle;
     }
 
     @Override
     protected VehicleCollisionTester createCollisionTester() {
-        return new VehicleCollisionTesterCastCylinder(VxLayers.DYNAMIC);
+        return new VehicleCollisionTesterCastCylinder(VxLayers.DYNAMIC, 0.5f * 0.05f);
     }
 
     @Override
-    public List<VxSeat> defineSeats() {
-        Vector3f riderOffset = new Vector3f(0.0f, 0.7f, -0.2f);
-        AABB localAABB = new AABB(
-                riderOffset.x - 0.3, riderOffset.y - 0.4, riderOffset.z - 0.3,
-                riderOffset.x + 0.3, riderOffset.y + 0.4, riderOffset.z + 0.3
+    public void defineSeats(VxSeat.Builder builder) {
+        // Driver's seat
+        Vector3f seatOffset = new Vector3f(0.0f, 0.4f, 0.1f);
+        AABB seatAABB = new AABB(
+                seatOffset.x - 0.3, seatOffset.y - 0.4, seatOffset.z - 0.3,
+                seatOffset.x + 0.3, seatOffset.y + 0.4, seatOffset.z + 0.3
         );
-        // Generate a deterministic UUID based on the body's ID and a seat identifier string.
-        // This ensures the seat ID is identical on both server and client.
         String seatIdentifier = "driver_seat";
-        UUID seatId = UUID.nameUUIDFromBytes((this.getPhysicsId().toString() + seatIdentifier).getBytes(StandardCharsets.UTF_8));
-        VxSeat driverSeat = new VxSeat(seatId, seatIdentifier, localAABB, riderOffset, true);
+        VxSeat driverSeat = new VxSeat(this.getPhysicsId(), seatIdentifier, seatAABB, seatOffset, true);
 
-        return List.of(driverSeat);
+        builder.addSeat(driverSeat);
     }
 
     @Override
     public int createJoltBody(VxRigidBodyFactory factory) {
+        // The center of mass is lowered for stability. The offset is relative to the chassis's half-extents.
+        Vec3 centerOfMassOffset = new Vec3(0, -this.getChassisHalfExtents().getY(), 0);
+
         try (
-                ShapeSettings shapeSettings = new BoxShapeSettings(this.getSyncData(DATA_CHASSIS_HALF_EXTENTS));
+                ShapeSettings chassisShape = new BoxShapeSettings(getChassisHalfExtents());
+                ShapeSettings finalShapeSettings = new OffsetCenterOfMassShapeSettings(centerOfMassOffset, chassisShape);
                 BodyCreationSettings bcs = new BodyCreationSettings()
         ) {
-            bcs.setShapeSettings(shapeSettings);
+            bcs.setShapeSettings(finalShapeSettings);
             bcs.setMotionType(EMotionType.Dynamic);
             bcs.setObjectLayer(VxLayers.DYNAMIC);
             bcs.setMotionQuality(EMotionQuality.LinearCast);
-            bcs.getMassPropertiesOverride().setMass(250f);
+            bcs.getMassPropertiesOverride().setMass(240.0f);
             bcs.setOverrideMassProperties(EOverrideMassProperties.CalculateInertia);
-            return factory.create(shapeSettings, bcs);
+
+            return factory.create(finalShapeSettings, bcs);
         }
     }
 }

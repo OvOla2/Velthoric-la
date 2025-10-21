@@ -10,15 +10,20 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.xmx.velthoric.math.VxOBB;
 import net.xmx.velthoric.math.VxTransform;
+import net.xmx.velthoric.physics.mounting.VxMountable;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 /**
  * Represents a single seat on a rideable physics body.
  * A seat defines a location where a player can sit, identified by a unique UUID.
  * It also includes its collision box, rider offset, and whether it's a driver seat.
+ * The UUID is deterministically generated from the parent body's UUID and the seat's name.
  *
  * @author xI-Mx-Ix
  */
@@ -29,8 +34,20 @@ public class VxSeat {
     private final Vector3f riderOffset;
     private final boolean isDriverSeat;
 
-    public VxSeat(UUID seatId, String seatName, AABB localAABB, Vector3f riderOffset, boolean isDriverSeat) {
-        this.seatId = seatId;
+    /**
+     * Constructs a new seat.
+     * The seat's UUID is generated deterministically to ensure it is the same on the server and client.
+     *
+     * @param physicsId   The unique ID of the physics body this seat belongs to.
+     * @param seatName    A unique name for the seat within the context of the body (e.g., "driver_seat").
+     * @param localAABB   The local-space bounding box for interaction checks.
+     * @param riderOffset The local-space offset from the seat's origin for the rider.
+     * @param isDriverSeat True if this seat allows control of the vehicle.
+     */
+    public VxSeat(UUID physicsId, String seatName, AABB localAABB, Vector3f riderOffset, boolean isDriverSeat) {
+        this.seatId = UUID.nameUUIDFromBytes(
+                (physicsId.toString() + seatName).getBytes(StandardCharsets.UTF_8)
+        );
         this.seatName = seatName;
         this.localAABB = localAABB;
         this.riderOffset = riderOffset;
@@ -145,5 +162,33 @@ public class VxSeat {
      */
     public boolean isDriverSeat() {
         return this.isDriverSeat;
+    }
+
+    /**
+     * A builder class for defining and collecting a list of {@link VxSeat} objects.
+     * This is used to streamline the seat definition process for a {@link VxMountable}.
+     */
+    public static class Builder {
+        private final List<VxSeat> seats = new ArrayList<>();
+
+        /**
+         * Adds a new seat to the collection.
+         *
+         * @param seat The {@link VxSeat} to add.
+         * @return This builder instance for method chaining.
+         */
+        public Builder addSeat(VxSeat seat) {
+            this.seats.add(seat);
+            return this;
+        }
+
+        /**
+         * Builds and returns the final list of defined seats.
+         *
+         * @return A new {@link List} containing all the added seats.
+         */
+        public List<VxSeat> build() {
+            return new ArrayList<>(this.seats);
+        }
     }
 }
