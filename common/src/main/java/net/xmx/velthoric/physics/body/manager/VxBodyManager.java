@@ -250,7 +250,6 @@ public class VxBodyManager {
             int index = dataStore.addBody(id, type);
             body.setDataStoreIndex(index);
             dataStore.isActive[index] = true;
-            chunkManager.startTracking(body);
             return body;
         });
     }

@@ -152,6 +152,28 @@ public final class VxChunkDataStore extends AbstractDataStore {
         this.states.set(index, state);
     }
 
+    /**
+     * Atomically attempts to reset the state of a chunk from LOADING_SCHEDULED back to UNLOADED.
+     * This is used by worker threads to safely abort a task if the target chunk is no longer loaded.
+     *
+     * @param index The index of the chunk.
+     * @return True if the state was successfully changed, false otherwise.
+     */
+    public boolean tryResetStateFromScheduled(int index) {
+        return this.states.compareAndSet(index, VxTerrainManager.STATE_LOADING_SCHEDULED, VxTerrainManager.STATE_UNLOADED);
+    }
+
+    /**
+     * Atomically attempts to advance the state of a chunk from LOADING_SCHEDULED to GENERATING_SHAPE.
+     * This is used by worker threads to claim a task after the chunk has been successfully loaded.
+     *
+     * @param index The index of the chunk.
+     * @return True if the state was successfully changed, false otherwise.
+     */
+    public boolean tryAdvanceStateToGenerating(int index) {
+        return this.states.compareAndSet(index, VxTerrainManager.STATE_LOADING_SCHEDULED, VxTerrainManager.STATE_GENERATING_SHAPE);
+    }
+
     public int getBodyId(int index) {
         return bodyIds.get(index);
     }
