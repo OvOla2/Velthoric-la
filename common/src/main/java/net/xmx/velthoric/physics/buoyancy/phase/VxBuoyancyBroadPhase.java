@@ -2,15 +2,18 @@
  * This file is part of Velthoric.
  * Licensed under LGPL 3.0.
  */
-package net.xmx.velthoric.physics.buoyancy;
+package net.xmx.velthoric.physics.buoyancy.phase;
 
 import com.github.stephengold.joltjni.enumerate.EMotionType;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.FluidTags;
+import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.material.FluidState;
 import net.xmx.velthoric.physics.body.manager.VxBodyDataStore;
 import net.xmx.velthoric.physics.body.type.VxBody;
+import net.xmx.velthoric.physics.buoyancy.VxBuoyancyDataStore;
+import net.xmx.velthoric.physics.buoyancy.VxFluidType;
 import net.xmx.velthoric.physics.world.VxPhysicsWorld;
 
 import java.util.UUID;
@@ -45,13 +48,8 @@ public final class VxBuoyancyBroadPhase {
         BlockPos.MutableBlockPos mutablePos = new BlockPos.MutableBlockPos();
 
         for (int i = 0; i < ds.getCapacity(); ++i) {
-            // Early exit for static bodies using the cached motion type. No JNI call needed.
-            if (ds.motionType[i] == EMotionType.Static) {
-                continue;
-            }
-
-            UUID id = ds.getIdForIndex(i);
-            if (id == null) {
+            // Early exit for static bodies or inactive slots.
+            if (ds.motionType[i] == EMotionType.Static || ds.getIdForIndex(i) == null) {
                 continue;
             }
 
@@ -80,10 +78,19 @@ public final class VxBuoyancyBroadPhase {
 
             for (int x = minBlockX; x <= maxBlockX; ++x) {
                 for (int z = minBlockZ; z <= maxBlockZ; ++z) {
+
+                    // This is the safest way to access chunk data without causing the server thread to wait for I/O.
+                    ChunkAccess chunk = this.level.getChunkSource().getChunkNow(x >> 4, z >> 4);
+
+                    if (chunk == null) {
+                        // If the chunk is not loaded and ready, we cannot check for fluids. Skip this entire column.
+                        continue;
+                    }
+
                     // Scan downwards from the top of the AABB to find the fluid surface in this column.
                     for (int y = maxBlockY; y >= minBlockY; --y) {
                         mutablePos.set(x, y, z);
-                        FluidState fluidState = this.level.getFluidState(mutablePos);
+                        FluidState fluidState = chunk.getFluidState(mutablePos);
 
                         if (!fluidState.isEmpty()) {
                             totalSurfaceHeight += y + fluidState.getHeight(level, mutablePos);
@@ -106,6 +113,9 @@ public final class VxBuoyancyBroadPhase {
 
                 // Only consider the body for buoyancy if its bottom is below the average surface.
                 if (averageSurfaceHeight > minY) {
+                    UUID id = ds.getIdForIndex(i);
+                    if (id == null) continue;
+
                     VxBody vxBody = physicsWorld.getBodyManager().getVxBody(id);
                     if (vxBody != null) {
                         dataStore.add(vxBody.getBodyId(), averageSurfaceHeight, detectedType);

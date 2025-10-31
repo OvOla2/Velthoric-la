@@ -74,37 +74,35 @@ public final class VxTerrainSystem implements Runnable {
 
     /**
      * Shuts down the terrain system, stops all background tasks, and cleans up resources.
+     * The shutdown sequence is critical to prevent deadlocks:
+     * 1. Stop the producer thread (`workerThread`) that submits new jobs.
+     * 2. Wait for it to terminate completely (`workerThread.join()`).
+     * 3. Only then, shut down the consumer (`jobSystem`) that processes the jobs.
      */
     public void shutdown() {
         if (isInitialized.compareAndSet(true, false)) {
-            jobSystem.shutdown();
             workerThread.interrupt();
-
-            VxMainClass.LOGGER.debug("Shutting down Terrain System for '{}'. Waiting up to 30 seconds for worker thread to exit...", level.dimension().location());
+            VxMainClass.LOGGER.debug("Shutting down Terrain System for '{}'. Waiting up to 5 seconds for worker thread to exit...", level.dimension().location());
             try {
-                workerThread.join(30000);
+                // After this point, no new tasks can be submitted to the jobSystem.
+                workerThread.join(5000);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                VxMainClass.LOGGER.warn("Interrupted while waiting for terrain system thread to stop.");
+                VxMainClass.LOGGER.warn("Interrupted while waiting for terrain system worker thread to stop.");
             }
 
             if (workerThread.isAlive()) {
-                StringBuilder stackTraceBuilder = new StringBuilder();
-                stackTraceBuilder.append("Stack trace of deadlocked thread '").append(workerThread.getName()).append("':\n");
-                for (StackTraceElement ste : workerThread.getStackTrace()) {
-                    stackTraceBuilder.append("\tat ").append(ste).append("\n");
-                }
-                VxMainClass.LOGGER.fatal("Terrain system thread for '{}' did not terminate in 30 seconds. Forcing shutdown.\n{}", level.dimension().location(), stackTraceBuilder.toString());
-            } else {
-                VxMainClass.LOGGER.debug("Terrain system for '{}' shut down gracefully.", level.dimension().location());
+                VxMainClass.LOGGER.error("Terrain system worker thread for '{}' did not terminate in 5 seconds.", level.dimension().location());
             }
+
+            // It now has a finite number of tasks to complete.
+            jobSystem.shutdown();
 
             VxMainClass.LOGGER.debug("Cleaning up terrain physics bodies for '{}'...", level.dimension().location());
             terrainManager.cleanupAllBodies();
 
             // Clean up caches and generator
             shapeCache.clear();
-            terrainGenerator.close();
 
             chunkDataStore.clear();
             chunksToRebuild.clear();

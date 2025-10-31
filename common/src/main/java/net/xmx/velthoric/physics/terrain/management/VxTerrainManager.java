@@ -147,6 +147,8 @@ public final class VxTerrainManager {
 
     /**
      * Atomically schedules the generation of a physics shape for a chunk.
+     * This is now fully asynchronous to avoid blocking the main thread.
+     *
      * @param pos The position of the chunk.
      * @param index The data store index of the chunk.
      * @param isInitialBuild True if this is the first time the chunk is being built.
@@ -156,31 +158,34 @@ public final class VxTerrainManager {
 
         final int version = chunkDataStore.scheduleForGeneration(index);
         if (version == -1) {
-            return; // Chunk is already being processed or removed.
+            return;
         }
 
-        final int previousState = chunkDataStore.getState(index);
-
-        level.getServer().execute(() -> {
+        jobSystem.submit(() -> {
             if (chunkDataStore.isVersionStale(index, version)) {
-                if (chunkDataStore.getState(index) == STATE_LOADING_SCHEDULED) {
-                    chunkDataStore.setState(index, previousState);
-                }
                 return;
             }
 
             LevelChunk chunk = level.getChunkSource().getChunk(pos.x(), pos.z(), false);
             if (chunk == null) {
-                chunkDataStore.setState(index, STATE_UNLOADED);
+                // The chunk is no longer loaded. Attempt to atomically reset the state
+                // to UNLOADED so it can be correctly scheduled again later.
+                chunkDataStore.tryResetStateFromScheduled(index);
+                return;
+            }
+
+            // If the state was changed by another thread (e.g., to REMOVING) while this job
+            // was queued, abort processing.
+            if (chunkDataStore.getState(index) != STATE_LOADING_SCHEDULED) {
                 return;
             }
 
             VxChunkSnapshot snapshot = VxChunkSnapshot.snapshotFromChunk(level, chunk, pos);
-            if (chunkDataStore.getState(index) == STATE_LOADING_SCHEDULED) {
-                chunkDataStore.setState(index, STATE_GENERATING_SHAPE);
-                jobSystem.submit(() -> processShapeGenerationOnWorker(pos, index, version, snapshot, isInitialBuild));
-            } else {
-                chunkDataStore.setState(index, previousState);
+
+            // Atomically advance the state to GENERATING_SHAPE. If this fails, another
+            // thread has modified the state, so we should abort.
+            if (chunkDataStore.tryAdvanceStateToGenerating(index)) {
+                processShapeGenerationOnWorker(pos, index, version, snapshot, isInitialBuild);
             }
         });
     }

@@ -24,11 +24,28 @@ import java.util.Map;
  *
  * @author xI-Mx-Ix
  */
-public final class VxTerrainGenerator implements AutoCloseable {
+public final class VxTerrainGenerator {
 
     private final VxTerrainShapeCache shapeCache;
-    private final Map<Vec3, BoxShapeSettings> boxSettingsCache;
     private static final int BOX_SETTINGS_CACHE_CAPACITY = 256;
+
+    /**
+     * A thread-local cache for BoxShapeSettings. Each worker thread gets its own private cache,
+     * eliminating thread contention and the need for synchronization when generating shapes in parallel.
+     */
+    private static final ThreadLocal<Map<Vec3, BoxShapeSettings>> threadLocalBoxSettingsCache = ThreadLocal.withInitial(() ->
+            new LinkedHashMap<>(BOX_SETTINGS_CACHE_CAPACITY, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<Vec3, BoxShapeSettings> eldest) {
+                    boolean shouldRemove = size() > BOX_SETTINGS_CACHE_CAPACITY;
+                    if (shouldRemove && eldest.getValue() != null) {
+                        eldest.getValue().close();
+                    }
+                    return shouldRemove;
+                }
+            }
+    );
+
     private static final ThreadLocal<Vec3> tempVec3Key = ThreadLocal.withInitial(Vec3::new);
 
     /**
@@ -37,16 +54,6 @@ public final class VxTerrainGenerator implements AutoCloseable {
      */
     public VxTerrainGenerator(VxTerrainShapeCache shapeCache) {
         this.shapeCache = shapeCache;
-        this.boxSettingsCache = new LinkedHashMap<>(BOX_SETTINGS_CACHE_CAPACITY, 0.75f, true) {
-            @Override
-            protected boolean removeEldestEntry(Map.Entry<Vec3, BoxShapeSettings> eldest) {
-                boolean shouldRemove = size() > BOX_SETTINGS_CACHE_CAPACITY;
-                if (shouldRemove && eldest.getValue() != null) {
-                    eldest.getValue().close();
-                }
-                return shouldRemove;
-            }
-        };
     }
 
     /**
@@ -54,8 +61,8 @@ public final class VxTerrainGenerator implements AutoCloseable {
      * <p>
      * This method first checks an in-memory cache for a pre-existing shape matching the chunk's content.
      * If not found, it creates a {@link StaticCompoundShape} composed of multiple {@link BoxShape}s,
-     * where each box represents a block's collision AABB. It also uses a cache for {@link BoxShapeSettings}
-     * to avoid re-creating them for common block dimensions.
+     * where each box represents a block's collision AABB. It uses a thread-local cache for {@link BoxShapeSettings}
+     * to avoid re-creating them and to ensure non-blocking parallel execution.
      *
      * @param level The server level, used to get context-aware collision shapes.
      * @param snapshot An immutable snapshot of the chunk section's block data.
@@ -76,6 +83,7 @@ public final class VxTerrainGenerator implements AutoCloseable {
         try (StaticCompoundShapeSettings compoundSettings = new StaticCompoundShapeSettings()) {
             boolean hasShapes = false;
             Vec3 halfExtentsKey = tempVec3Key.get();
+            Map<Vec3, BoxShapeSettings> boxSettingsCache = threadLocalBoxSettingsCache.get();
 
             for (VxChunkSnapshot.ShapeInfo info : snapshot.shapes()) {
                 BlockPos worldPos = snapshot.pos().getOrigin().offset(info.localPos());
@@ -91,14 +99,11 @@ public final class VxTerrainGenerator implements AutoCloseable {
                     }
 
                     halfExtentsKey.set(hx, hy, hz);
-                    BoxShapeSettings boxSettings;
-                    synchronized (boxSettingsCache) {
-                        boxSettings = boxSettingsCache.get(halfExtentsKey);
-                        if (boxSettings == null) {
-                            Vec3 newKey = new Vec3(hx, hy, hz);
-                            boxSettings = new BoxShapeSettings(newKey, 0.0f);
-                            boxSettingsCache.put(newKey, boxSettings);
-                        }
+                    BoxShapeSettings boxSettings = boxSettingsCache.get(halfExtentsKey);
+                    if (boxSettings == null) {
+                        Vec3 newKey = new Vec3(hx, hy, hz);
+                        boxSettings = new BoxShapeSettings(newKey, 0.0f);
+                        boxSettingsCache.put(newKey, boxSettings);
                     }
 
                     float cx = (float) (info.localPos().getX() + aabb.minX + hx);
@@ -124,19 +129,6 @@ public final class VxTerrainGenerator implements AutoCloseable {
                     return null;
                 }
             }
-        }
-    }
-
-    /**
-     * Closes the generator and releases resources held by its internal caches.
-     */
-    @Override
-    public void close() {
-        synchronized (boxSettingsCache) {
-            for (BoxShapeSettings settings : boxSettingsCache.values()) {
-                settings.close();
-            }
-            boxSettingsCache.clear();
         }
     }
 }

@@ -5,12 +5,10 @@
 package net.xmx.velthoric.debug;
 
 import com.github.stephengold.joltjni.Jolt;
-import dev.architectury.platform.Platform;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.Minecraft;
 import net.xmx.velthoric.event.api.VxF3ScreenAdditionEvent;
-import net.xmx.velthoric.init.VxMainClass;
 import net.xmx.velthoric.physics.body.client.VxClientBodyManager;
 import net.xmx.velthoric.physics.body.client.VxClientBodyDataStore;
 import net.xmx.velthoric.physics.body.type.VxBody;
@@ -20,6 +18,13 @@ import net.xmx.velthoric.physics.body.type.VxSoftBody;
 import java.util.List;
 import java.util.UUID;
 
+/**
+ * A utility class for adding debug information to the F3 screen.
+ * This class is used to display information about the physics engine and the
+ * number of physics bodies in the game.
+ *
+ * @author xI-Mx-Ix
+ */
 @Environment(EnvType.CLIENT)
 public class VxF3ScreenAddition {
 
@@ -36,7 +41,6 @@ public class VxF3ScreenAddition {
         }
 
         infoList.add("");
-        infoList.add("Velthoric v" + getModVersion());
         infoList.add("Jolt JNI v" + Jolt.versionString());
 
         addClientInfo(infoList);
@@ -51,9 +55,6 @@ public class VxF3ScreenAddition {
         long clientSoftCount = 0;
 
         for (UUID id : store.getAllPhysicsIds()) {
-            Integer index = store.getIndexForId(id);
-            if (index == null) continue;
-
             VxBody body = clientManager.getBody(id);
             if (body == null) continue;
 
@@ -64,10 +65,15 @@ public class VxF3ScreenAddition {
             }
         }
 
-        left.add("RB: " + clientRigidCount + " | SB: " + clientSoftCount);
-    }
+        int bodyCount = store.getBodyCount();
+        int capacity = store.getCapacity();
+        int freeIndices = store.getFreeIndicesCount();
+        long memoryBytes = store.getMemoryUsageBytes();
+        String memoryString = memoryBytes > 1024 * 1024
+                ? String.format("%.2f MB", memoryBytes / (1024.0 * 1024.0))
+                : String.format("%d KB", memoryBytes / 1024);
 
-    private static String getModVersion() {
-        return Platform.getMod(VxMainClass.MODID).getVersion();
+        left.add(String.format("Bodies: %d (RB: %d, SB: %d)", bodyCount, clientRigidCount, clientSoftCount));
+        left.add(String.format("Store: C: %d/%d | F: %d | M: %s", bodyCount, capacity, freeIndices, memoryString));
     }
 }
