@@ -19,11 +19,11 @@ import net.xmx.velthoric.math.VxTransform;
 import net.xmx.velthoric.physics.body.VxJoltBridge;
 import net.xmx.velthoric.physics.body.VxRemovalReason;
 import net.xmx.velthoric.physics.body.network.internal.VxNetworkDispatcher;
+import net.xmx.velthoric.physics.body.network.synchronization.manager.VxServerSyncManager;
 import net.xmx.velthoric.physics.body.persistence.VxBodyStorage;
 import net.xmx.velthoric.physics.body.persistence.VxSerializedBodyData;
 import net.xmx.velthoric.physics.body.registry.VxBodyRegistry;
 import net.xmx.velthoric.physics.body.registry.VxBodyType;
-import net.xmx.velthoric.physics.body.network.synchronization.manager.VxServerSyncManager;
 import net.xmx.velthoric.physics.body.type.VxBody;
 import net.xmx.velthoric.physics.body.type.VxRigidBody;
 import net.xmx.velthoric.physics.body.type.VxSoftBody;
@@ -34,6 +34,7 @@ import org.jetbrains.annotations.Nullable;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.Consumer;
 
 /**
@@ -83,6 +84,12 @@ public class VxBodyManager {
      * Counter for generating new network IDs when the free pool is empty.
      */
     private int nextNetworkId = 1;
+
+    /**
+     * A queue tracking active asynchronous body storage tasks.
+     * Used to ensure all pending data insertions are completed before flushing to disk.
+     */
+    private final ConcurrentLinkedQueue<CompletableFuture<?>> pendingStorageTasks = new ConcurrentLinkedQueue<>();
 
     /**
      * Constructs a new manager for the specified physics world.
@@ -418,23 +425,25 @@ public class VxBodyManager {
     }
 
     /**
-     * Efficiently unloads all physics bodies located in a specific chunk.
+     * Efficiently unloads all physics bodies located in a specific chunk from memory.
      * <p>
-     * This method is intended to be called when a Minecraft chunk is unloaded. It removes
-     * the bodies from memory to free resources but does <b>not</b> trigger a save operation,
-     * assuming the chunk data has already been serialized via {@link #saveBodiesInChunk}.
+     * This method removes the bodies from the active simulation and the chunk tracking system.
+     * It does not perform any disk I/O; persistence must be handled externally before calling this
+     * (e.g., via {@link #saveBodiesInChunk}).
      *
      * @param chunkPos The position of the chunk to unload.
      */
     public void onChunkUnload(ChunkPos chunkPos) {
-        // Step 1: Atomically retrieve and untrack bodies. This avoids concurrent modification issues.
+        // Retrieve and untrack all bodies in the specified chunk atomically
         List<VxBody> bodiesToUnload = chunkManager.removeAllInChunk(chunkPos);
 
         if (bodiesToUnload.isEmpty()) {
             return;
         }
 
-        // Step 2: Perform memory cleanup with the UNLOAD reason (skips disk I/O).
+        // Remove bodies from the physics simulation using the UNLOAD reason.
+        // This tells the internal logic to clean up runtime resources (Jolt IDs, etc.)
+        // without attempting to save or delete persistent data files.
         for (VxBody body : bodiesToUnload) {
             processBodyRemoval(body, VxRemovalReason.UNLOAD);
         }
@@ -574,13 +583,19 @@ public class VxBodyManager {
     /**
      * Serializes all physics bodies within a given chunk and queues them for storage.
      * <p>
-     * This operation is split into two phases:
-     * 1. <b>Snapshot (Main/Physics Thread):</b> Captures the state of all bodies in the chunk to a byte buffer.
-     * 2. <b>Write (Async):</b> Passes the buffer to {@link VxBodyStorage} to write to disk.
+     * This operation captures the state of all bodies in the chunk immediately on the calling thread.
+     * This synchronous snapshot ensures that data is serialized before any subsequent chunk unloading logic
+     * can remove the bodies from memory. The actual disk I/O is delegated to the storage system's asynchronous worker.
+     * <p>
+     * The resulting storage task is tracked internally to allow {@link #flushPersistence(boolean)}
+     * to wait for completion during shutdown.
      *
      * @param pos The position of the chunk to save.
      */
     public void saveBodiesInChunk(ChunkPos pos) {
+        // Cleanup finished tasks to prevent memory leaks in the queue
+        pendingStorageTasks.removeIf(CompletableFuture::isDone);
+
         List<VxBody> bodiesInChunk = new ArrayList<>();
         chunkManager.forEachBodyInChunk(pos, bodiesInChunk::add);
 
@@ -588,38 +603,53 @@ public class VxBodyManager {
             return;
         }
 
-        // Schedule the snapshot creation on the physics thread to ensure thread safety
-        world.execute(() -> {
-            Map<VxAbstractRegionStorage.RegionPos, Map<UUID, byte[]>> dataByRegion = new HashMap<>();
+        // Create the snapshot synchronously on the current thread.
+        // This accesses the DataStore arrays to capture position and rotation immediately.
+        Map<VxAbstractRegionStorage.RegionPos, Map<UUID, byte[]>> dataByRegion = new HashMap<>();
 
-            for (VxBody body : bodiesInChunk) {
-                int index = body.getDataStoreIndex();
-                if (index == -1) continue;
+        for (VxBody body : bodiesInChunk) {
+            int index = body.getDataStoreIndex();
 
-                // Serialize the body state
-                byte[] snapshot = bodyStorage.serializeBodyData(body);
-                if (snapshot == null) continue;
+            // Ensure the body has a valid data store index.
+            // Note: Sleeping (inactive) bodies must also be saved, so we only check if the index is valid.
+            if (index == -1) continue;
 
-                // Group data by region (32x32 chunks) for efficient batch I/O
-                ChunkPos chunkPos = getBodyChunkPos(index);
-                VxAbstractRegionStorage.RegionPos regionPos = new VxAbstractRegionStorage.RegionPos(chunkPos.x >> 5, chunkPos.z >> 5);
-                dataByRegion.computeIfAbsent(regionPos, k -> new HashMap<>()).put(body.getPhysicsId(), snapshot);
-            }
+            // Serialize the body state to a byte array
+            byte[] snapshot = bodyStorage.serializeBodyData(body);
+            if (snapshot == null) continue;
 
-            // Hand off to the storage system
-            if (!dataByRegion.isEmpty()) {
-                bodyStorage.storeBodyBatch(dataByRegion);
-            }
-        });
+            // Group data by region (32x32 chunks) for efficient batch I/O
+            ChunkPos chunkPos = getBodyChunkPos(index);
+            VxAbstractRegionStorage.RegionPos regionPos = new VxAbstractRegionStorage.RegionPos(chunkPos.x >> 5, chunkPos.z >> 5);
+            dataByRegion.computeIfAbsent(regionPos, k -> new HashMap<>()).put(body.getPhysicsId(), snapshot);
+        }
+
+        // Hand off the serialized snapshots to the storage system for asynchronous writing
+        // and track the future to ensure data integrity on shutdown.
+        if (!dataByRegion.isEmpty()) {
+            CompletableFuture<Void> task = bodyStorage.storeBodyBatch(dataByRegion);
+            pendingStorageTasks.add(task);
+        }
     }
 
     /**
      * Forces pending persistence tasks to write to disk.
      *
-     * @param block If true, the current thread will wait until all data is flushed.
+     * @param block If true, the current thread will wait until all queued data insertions
+     *              and file writes are fully completed.
      */
     public void flushPersistence(boolean block) {
         try {
+            if (block) {
+                // Wait for all queued "put" operations (transferring snapshots to memory maps) to complete
+                CompletableFuture<?>[] pending = pendingStorageTasks.toArray(new CompletableFuture[0]);
+                if (pending.length > 0) {
+                    CompletableFuture.allOf(pending).join();
+                }
+                pendingStorageTasks.clear();
+            }
+
+            // Now that all data is in the region maps, flush them to disk
             CompletableFuture<Void> future = bodyStorage.saveDirtyRegions();
             bodyStorage.getRegionIndex().save();
             if (block) {
