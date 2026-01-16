@@ -42,8 +42,18 @@ public class MixinEntityStorage_Persistence {
     private void onLoadEntities(ChunkPos pos, CallbackInfoReturnable<CompletableFuture<ChunkEntities<Entity>>> cir) {
         VxPhysicsWorld world = VxPhysicsWorld.get(this.level.dimension());
         if (world != null) {
-            world.getBodyManager().getBodyStorage().loadBodiesInChunk(pos);
-            world.getConstraintManager().getConstraintStorage().loadConstraintsInChunk(pos);
+            world.getBodyManager().getBodyStorage().loadChunk(pos).thenAccept(dataList -> {
+                // Schedule instantiation on main thread/physics thread
+                world.execute(() -> {
+                    for (var data : dataList) world.getBodyManager().addSerializedBody(data);
+                });
+            });
+
+            world.getConstraintManager().getConstraintStorage().loadChunk(pos).thenAccept(constraints -> {
+                world.execute(() -> {
+                    for (var c : constraints) world.getConstraintManager().addConstraintFromStorage(c);
+                });
+            });
         }
     }
 
@@ -61,21 +71,6 @@ public class MixinEntityStorage_Persistence {
             // Serialize and save physics data matching this chunk
             world.getBodyManager().saveBodiesInChunk(pos);
             world.getConstraintManager().saveConstraintsInChunk(pos);
-        }
-    }
-
-    /**
-     * Injects into the flush method.
-     * Minecraft calls this to ensure data is written to disk (e.g., during save-all).
-     * If 'synchronize' is true, we must wait for our physics I/O to complete.
-     */
-    @Inject(method = "flush", at = @At("RETURN"))
-    private void onFlush(boolean synchronize, CallbackInfo ci) {
-        VxPhysicsWorld world = VxPhysicsWorld.get(this.level.dimension());
-        if (world != null) {
-            // Flush pending storage tasks. If synchronize is true, this blocks until done.
-            world.getBodyManager().flushPersistence(synchronize);
-            world.getConstraintManager().flushPersistence(synchronize);
         }
     }
 }

@@ -16,6 +16,7 @@ import net.xmx.velthoric.config.VxModConfig;
 import net.xmx.velthoric.init.VxMainClass;
 import net.xmx.velthoric.network.VxByteBuf;
 import net.xmx.velthoric.network.VxPacketHandler;
+import net.xmx.velthoric.network.VxPacketUtils;
 import net.xmx.velthoric.physics.body.manager.VxBodyManager;
 import net.xmx.velthoric.physics.body.manager.VxServerBodyDataStore;
 import net.xmx.velthoric.physics.body.network.internal.packet.S2CRemoveBodyBatchPacket;
@@ -24,8 +25,8 @@ import net.xmx.velthoric.physics.body.network.internal.packet.S2CUpdateBodyState
 import net.xmx.velthoric.physics.body.network.internal.packet.S2CUpdateVerticesBatchPacket;
 import net.xmx.velthoric.physics.body.type.VxBody;
 import net.xmx.velthoric.physics.body.util.VxChunkUtil;
-import net.xmx.velthoric.physics.vehicle.sync.VxVehicleNetworkDispatcher;
 
+import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -45,7 +46,6 @@ public class VxNetworkDispatcher {
     private final ServerLevel level;
     private final VxBodyManager manager;
     private final VxServerBodyDataStore dataStore;
-    private final VxVehicleNetworkDispatcher vehicleDispatcher;
 
     // --- Constants for network tuning ---
     private final int NETWORK_THREAD_TICK_RATE_MS;
@@ -84,9 +84,19 @@ public class VxNetworkDispatcher {
 
     private ExecutorService networkSyncExecutor;
 
-    // A reusable buffer for the network thread to avoid allocations in tight loops.
-    // Package-private so other network components can reuse the strategy if needed, though logically isolated.
-    private static final ThreadLocal<VxByteBuf> THREAD_LOCAL_BYTE_BUF = ThreadLocal.withInitial(() -> new VxByteBuf(Unpooled.buffer(1024)));
+    /**
+     * Container for reusable arrays used during batch packet construction.
+     * This prevents massive allocation spikes during high-concurrency network ticks.
+     */
+    private static final ThreadLocal<BatchBuffers> BATCH_BUFFERS = ThreadLocal.withInitial(BatchBuffers::new);
+
+    /**
+     * A reusable thread-local buffer used for serializing packet data.
+     * This prevents the allocation of a new ByteBuf for every single packet dispatched.
+     * The initial capacity is set to 4KB to accommodate typical batch sizes.
+     */
+    private static final ThreadLocal<VxByteBuf> PACKET_SERIALIZATION_BUFFER = ThreadLocal.withInitial(() ->
+            new VxByteBuf(Unpooled.buffer(4096)));
 
     /**
      * Constructs a new network dispatcher.
@@ -98,7 +108,6 @@ public class VxNetworkDispatcher {
         this.level = level;
         this.manager = manager;
         this.dataStore = manager.getDataStore();
-        this.vehicleDispatcher = new VxVehicleNetworkDispatcher();
 
         this.NETWORK_THREAD_TICK_RATE_MS = VxModConfig.NETWORK.networkTickRate.get();
         this.MAX_STATES_PER_PACKET = VxModConfig.NETWORK.maxStatesPerPacket.get();
@@ -154,8 +163,6 @@ public class VxNetworkDispatcher {
                 // Delegate synchronized data updates to the dedicated manager
                 // This scans for custom data changes and uses the dispatcher to find recipients
                 this.manager.getServerSyncManager().sendSynchronizedDataUpdates(this);
-
-                this.vehicleDispatcher.dispatchUpdates(this.level, this.manager, this.bodyTrackers);
 
                 long cycleEndTime = System.nanoTime();
                 long cycleDurationMs = (cycleEndTime - cycleStartTime) / 1_000_000;
@@ -230,8 +237,8 @@ public class VxNetworkDispatcher {
      * Sends batched body state (transform and velocity) updates to a specific player.
      * The data is split into multiple packets if it exceeds {@code MAX_STATES_PER_PACKET}.
      * <p>
-     * This method collects absolute positions and the simulation timestamp. The created
-     * packet will handle relative positioning encoding internally.
+     * This method uses {@link ThreadLocal} buffers to collect data, avoiding the allocation
+     * of temporary arrays for every batch. The final packet creation copies only the required data.
      *
      * @param player  The player to send the update packets to.
      * @param indices The list of data store indices for the bodies to be updated.
@@ -239,13 +246,9 @@ public class VxNetworkDispatcher {
     private void sendBodyStatePackets(ServerPlayer player, IntArrayList indices) {
         if (indices.isEmpty()) return;
 
-        // Arrays to hold batch data. Note that we do not need a timestamp array anymore,
-        // as we send a single timestamp per batch.
-        int[] networkIds = new int[MAX_STATES_PER_PACKET];
-        double[] posX = new double[MAX_STATES_PER_PACKET], posY = new double[MAX_STATES_PER_PACKET], posZ = new double[MAX_STATES_PER_PACKET];
-        float[] rotX = new float[MAX_STATES_PER_PACKET], rotY = new float[MAX_STATES_PER_PACKET], rotZ = new float[MAX_STATES_PER_PACKET], rotW = new float[MAX_STATES_PER_PACKET];
-        float[] velX = new float[MAX_STATES_PER_PACKET], velY = new float[MAX_STATES_PER_PACKET], velZ = new float[MAX_STATES_PER_PACKET];
-        boolean[] isActive = new boolean[MAX_STATES_PER_PACKET];
+        // Retrieve reusable buffers for the current thread
+        BatchBuffers buffers = BATCH_BUFFERS.get();
+        buffers.ensureCapacity(MAX_STATES_PER_PACKET);
 
         int currentBatchCount = 0;
         long batchTimestamp = 0L;
@@ -255,72 +258,131 @@ public class VxNetworkDispatcher {
             if (networkId == -1) continue;
 
             // Initialize the batch timestamp using the first element.
-            // We assume all bodies in this update cycle share the same simulation tick.
             if (currentBatchCount == 0) {
                 batchTimestamp = dataStore.lastUpdateTimestamp[index];
             }
 
-            networkIds[currentBatchCount] = networkId;
+            buffers.networkIds[currentBatchCount] = networkId;
 
             // Retrieve absolute positions (double).
-            // The packet encoding will convert these to relative floats.
-            posX[currentBatchCount] = dataStore.posX[index];
-            posY[currentBatchCount] = dataStore.posY[index];
-            posZ[currentBatchCount] = dataStore.posZ[index];
+            buffers.posX[currentBatchCount] = dataStore.posX[index];
+            buffers.posY[currentBatchCount] = dataStore.posY[index];
+            buffers.posZ[currentBatchCount] = dataStore.posZ[index];
 
-            rotX[currentBatchCount] = dataStore.rotX[index];
-            rotY[currentBatchCount] = dataStore.rotY[index];
-            rotZ[currentBatchCount] = dataStore.rotZ[index];
-            rotW[currentBatchCount] = dataStore.rotW[index];
+            buffers.rotX[currentBatchCount] = dataStore.rotX[index];
+            buffers.rotY[currentBatchCount] = dataStore.rotY[index];
+            buffers.rotZ[currentBatchCount] = dataStore.rotZ[index];
+            buffers.rotW[currentBatchCount] = dataStore.rotW[index];
 
-            isActive[currentBatchCount] = dataStore.isActive[index];
+            boolean active = dataStore.isActive[index];
+            buffers.isActive[currentBatchCount] = active;
 
-            if (isActive[currentBatchCount]) {
-                velX[currentBatchCount] = dataStore.velX[index];
-                velY[currentBatchCount] = dataStore.velY[index];
-                velZ[currentBatchCount] = dataStore.velZ[index];
+            if (active) {
+                buffers.velX[currentBatchCount] = dataStore.velX[index];
+                buffers.velY[currentBatchCount] = dataStore.velY[index];
+                buffers.velZ[currentBatchCount] = dataStore.velZ[index];
             } else {
-                velX[currentBatchCount] = 0;
-                velY[currentBatchCount] = 0;
-                velZ[currentBatchCount] = 0;
+                buffers.velX[currentBatchCount] = 0;
+                buffers.velY[currentBatchCount] = 0;
+                buffers.velZ[currentBatchCount] = 0;
             }
 
             currentBatchCount++;
 
-            // If the batch is full, instantiate the packet with the single timestamp and send it.
+            // If the batch is full, dispatch the packet
             if (currentBatchCount == MAX_STATES_PER_PACKET) {
-                S2CUpdateBodyStateBatchPacket packet = new S2CUpdateBodyStateBatchPacket(
-                        currentBatchCount,
-                        batchTimestamp,
-                        networkIds,
-                        posX, posY, posZ,
-                        rotX, rotY, rotZ, rotW,
-                        velX, velY, velZ,
-                        isActive
-                );
-                VxPacketHandler.sendToPlayer(packet, player);
+                dispatchBodyStatePacket(player, buffers, currentBatchCount, batchTimestamp);
                 currentBatchCount = 0;
             }
         }
 
-        // Send any remaining bodies in the final partial batch.
+        // Send any remaining bodies
         if (currentBatchCount > 0) {
+            dispatchBodyStatePacket(player, buffers, currentBatchCount, batchTimestamp);
+        }
+    }
+
+    /**
+     * Constructs and sends a body state update packet.
+     * <p>
+     * This method performs immediate serialization of the data in {@code buffers} into a raw byte array.
+     * By doing so, it avoids creating defensive copies ({@link Arrays#copyOf}) of the 14 internal arrays
+     * typically required to construct the packet object.
+     * <p>
+     * The data is serialized relative to a calculated anchor point (the position of the first body)
+     * to maintain floating-point precision while using 32-bit floats for transmission.
+     *
+     * @param player    The target player.
+     * @param buffers   The container holding the raw simulation data.
+     * @param count     The number of valid entries in the buffers to process.
+     * @param timestamp The simulation tick timestamp.
+     */
+    private void dispatchBodyStatePacket(ServerPlayer player, BatchBuffers buffers, int count, long timestamp) {
+        VxByteBuf buf = PACKET_SERIALIZATION_BUFFER.get();
+        buf.clear(); // Reset reader/writer indices for reuse
+
+        try {
+            // Write Header
+            buf.writeVarInt(count);
+            buf.writeLong(timestamp);
+
+            // Calculate anchor point for relative precision
+            // Using the first body as the origin ensures offsets remain within float precision range.
+            double baseX = count > 0 ? buffers.posX[0] : 0.0;
+            double baseY = count > 0 ? buffers.posY[0] : 0.0;
+            double baseZ = count > 0 ? buffers.posZ[0] : 0.0;
+
+            buf.writeDouble(baseX);
+            buf.writeDouble(baseY);
+            buf.writeDouble(baseZ);
+
+            // Serialize Body Data directly from the reusable BatchBuffers
+            for (int i = 0; i < count; i++) {
+                buf.writeVarInt(buffers.networkIds[i]);
+
+                // Convert absolute double precision to relative float precision
+                buf.writeFloat((float) (buffers.posX[i] - baseX));
+                buf.writeFloat((float) (buffers.posY[i] - baseY));
+                buf.writeFloat((float) (buffers.posZ[i] - baseZ));
+
+                buf.writeFloat(buffers.rotX[i]);
+                buf.writeFloat(buffers.rotY[i]);
+                buf.writeFloat(buffers.rotZ[i]);
+                buf.writeFloat(buffers.rotW[i]);
+
+                boolean active = buffers.isActive[i];
+                buf.writeBoolean(active);
+
+                if (active) {
+                    buf.writeFloat(buffers.velX[i]);
+                    buf.writeFloat(buffers.velY[i]);
+                    buf.writeFloat(buffers.velZ[i]);
+                }
+            }
+
+            // Extract valid bytes and compress
+            byte[] uncompressedData = new byte[buf.readableBytes()];
+            buf.readBytes(uncompressedData);
+
+            byte[] compressedData = VxPacketUtils.compress(uncompressedData);
+
+            // Send the pre-serialized data payload
+            // This constructor avoids array copying entirely on the server side.
             S2CUpdateBodyStateBatchPacket packet = new S2CUpdateBodyStateBatchPacket(
-                    currentBatchCount,
-                    batchTimestamp,
-                    networkIds,
-                    posX, posY, posZ,
-                    rotX, rotY, rotZ, rotW,
-                    velX, velY, velZ,
-                    isActive
+                    uncompressedData.length,
+                    compressedData
             );
             VxPacketHandler.sendToPlayer(packet, player);
+
+        } catch (IOException e) {
+            // Log error but avoid crashing the networking thread if compression fails
+            e.printStackTrace();
         }
     }
 
     /**
      * Sends batched vertex data updates to a specific player.
-     * The data is split into multiple packets if the number of bodies exceeds {@code MAX_VERTICES_PER_PACKET}.
+     * Uses reusable buffers to minimize allocation overhead during collection.
      *
      * @param player  The player to send the vertex data packets to.
      * @param indices The list of data store indices for the bodies whose vertex data has changed.
@@ -328,25 +390,40 @@ public class VxNetworkDispatcher {
     private void sendVertexDataPackets(ServerPlayer player, IntArrayList indices) {
         if (indices.isEmpty()) return;
 
-        for (int i = 0; i < indices.size(); i += MAX_VERTICES_PER_PACKET) {
-            int end = Math.min(i + MAX_VERTICES_PER_PACKET, indices.size());
-            List<Integer> sublist = indices.subList(i, end);
-            IntArrayList networkIdList = new IntArrayList();
-            ObjectArrayList<float[]> vertexList = new ObjectArrayList<>();
+        BatchBuffers buffers = BATCH_BUFFERS.get();
+        buffers.ensureCapacity(MAX_VERTICES_PER_PACKET);
 
-            for (int index : sublist) {
-                int networkId = dataStore.networkId[index];
-                if (networkId != -1) {
-                    networkIdList.add(networkId);
-                    vertexList.add(dataStore.vertexData[index]);
-                }
-            }
+        int currentBatchCount = 0;
 
-            if (!networkIdList.isEmpty()) {
-                S2CUpdateVerticesBatchPacket packet = new S2CUpdateVerticesBatchPacket(networkIdList.size(), networkIdList.toIntArray(), vertexList.toArray(new float[0][]));
-                VxPacketHandler.sendToPlayer(packet, player);
+        for (int index : indices) {
+            int networkId = dataStore.networkId[index];
+            if (networkId == -1) continue;
+
+            buffers.networkIds[currentBatchCount] = networkId;
+            // Vertex data arrays are references; we don't copy the float content here, just the reference.
+            // The Packet will compress this data immediately upon encoding.
+            buffers.vertexData[currentBatchCount] = dataStore.vertexData[index];
+
+            currentBatchCount++;
+
+            if (currentBatchCount == MAX_VERTICES_PER_PACKET) {
+                dispatchVertexPacket(player, buffers, currentBatchCount);
+                currentBatchCount = 0;
             }
         }
+
+        if (currentBatchCount > 0) {
+            dispatchVertexPacket(player, buffers, currentBatchCount);
+        }
+    }
+
+    private void dispatchVertexPacket(ServerPlayer player, BatchBuffers buffers, int count) {
+        S2CUpdateVerticesBatchPacket packet = new S2CUpdateVerticesBatchPacket(
+                count,
+                Arrays.copyOf(buffers.networkIds, count),
+                Arrays.copyOf(buffers.vertexData, count)
+        );
+        VxPacketHandler.sendToPlayer(packet, player);
     }
 
     /**
@@ -647,6 +724,43 @@ public class VxNetworkDispatcher {
         }
         if (!batch.isEmpty()) {
             VxPacketHandler.sendToPlayer(new S2CSpawnBodyBatchPacket(batch), player);
+        }
+    }
+
+    /**
+     * Internal container for reusable arrays.
+     * This avoids repeated allocation of large arrays during batch packet construction.
+     */
+    private static class BatchBuffers {
+        public int[] networkIds;
+        public double[] posX, posY, posZ;
+        public float[] rotX, rotY, rotZ, rotW;
+        public float[] velX, velY, velZ;
+        public boolean[] isActive;
+        // Vertices references
+        public float[][] vertexData;
+
+        public BatchBuffers() {
+            // Initial reasonable size
+            ensureCapacity(128);
+        }
+
+        public void ensureCapacity(int capacity) {
+            if (networkIds == null || networkIds.length < capacity) {
+                networkIds = new int[capacity];
+                posX = new double[capacity];
+                posY = new double[capacity];
+                posZ = new double[capacity];
+                rotX = new float[capacity];
+                rotY = new float[capacity];
+                rotZ = new float[capacity];
+                rotW = new float[capacity];
+                velX = new float[capacity];
+                velY = new float[capacity];
+                velZ = new float[capacity];
+                isActive = new boolean[capacity];
+                vertexData = new float[capacity][];
+            }
         }
     }
 }
