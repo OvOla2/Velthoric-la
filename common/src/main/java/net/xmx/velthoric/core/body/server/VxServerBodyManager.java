@@ -13,17 +13,16 @@ import it.unimi.dsi.fastutil.ints.Int2ObjectMaps;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
-import net.xmx.velthoric.core.body.VxRemovalReason;
+import net.xmx.velthoric.core.behavior.VxBehaviorManager;
+import net.xmx.velthoric.core.behavior.VxBehaviors;
 import net.xmx.velthoric.core.body.VxAbstractBodyManager;
+import net.xmx.velthoric.core.body.VxRemovalReason;
 import net.xmx.velthoric.core.body.registry.VxBodyRegistry;
-import net.xmx.velthoric.core.body.registry.VxBodyType;
+import net.xmx.velthoric.core.body.VxBodyType;
 import net.xmx.velthoric.core.body.tracking.VxSpatialManager;
-import net.xmx.velthoric.core.body.type.VxBody;
-import net.xmx.velthoric.core.body.type.VxRigidBody;
-import net.xmx.velthoric.core.body.type.VxSoftBody;
-import net.xmx.velthoric.core.mounting.manager.VxMountingManager;
+import net.xmx.velthoric.core.body.VxBody;
 import net.xmx.velthoric.core.network.internal.VxNetworkDispatcher;
-import net.xmx.velthoric.core.network.synchronization.manager.VxServerSyncManager;
+import net.xmx.velthoric.core.persistence.impl.body.VxBodyCodec;
 import net.xmx.velthoric.core.persistence.impl.body.VxBodyStorage;
 import net.xmx.velthoric.core.persistence.impl.body.VxSerializedBodyData;
 import net.xmx.velthoric.core.physics.VxJoltBridge;
@@ -68,19 +67,9 @@ public class VxServerBodyManager extends VxAbstractBodyManager {
     private final VxServerBodyDataStore dataStore;
 
     /**
-     * Extracts physics results from the simulation thread to the game thread.
-     */
-    private final VxPhysicsExtractor physicsExtractor;
-
-    /**
      * Manages the broadcasting of physics state updates to clients.
      */
     private final VxNetworkDispatcher networkDispatcher;
-
-    /**
-     * Manages server-side synchronization and dirty state tracking.
-     */
-    private final VxServerSyncManager serverSyncManager;
 
     /**
      * Handles spatial partitioning and chunk-based lookups for bodies.
@@ -88,9 +77,10 @@ public class VxServerBodyManager extends VxAbstractBodyManager {
     private final VxSpatialManager spatialManager;
 
     /**
-     * Manages entity mounting and attachments relative to physics bodies.
+     * The behavior manager that handles composition-based behavior dispatch.
+     * This uses a data-driven bitmask system for maximum cache efficiency.
      */
-    private final VxMountingManager mountingManager;
+    private final VxBehaviorManager behaviorManager;
 
     /**
      * Optimized lookup map connecting Jolt's native integer BodyIDs to the Java wrapper {@link VxBody}.
@@ -118,11 +108,12 @@ public class VxServerBodyManager extends VxAbstractBodyManager {
         this.world = world;
         this.dataStore = new VxServerBodyDataStore();
         this.bodyStorage = new VxBodyStorage(world.getLevel());
-        this.physicsExtractor = new VxPhysicsExtractor(this);
         this.networkDispatcher = new VxNetworkDispatcher(world.getLevel(), this);
-        this.serverSyncManager = new VxServerSyncManager(this);
         this.spatialManager = new VxSpatialManager();
-        this.mountingManager = new VxMountingManager(this.world);
+        this.behaviorManager = new VxBehaviorManager();
+
+        // Initialize the behavior system with built-in behaviors.
+        this.behaviorManager.init(world.getLevel(), world);
     }
 
     /**
@@ -166,8 +157,17 @@ public class VxServerBodyManager extends VxAbstractBodyManager {
      *
      * @param world The physics world being ticked.
      */
+    public void onPrePhysicsTick(VxPhysicsWorld world) {
+        behaviorManager.onPrePhysicsTick(this.world, this.dataStore);
+    }
+
+    /**
+     * Called during the physics thread tick. Delegates to the updater to advance simulation state.
+     *
+     * @param world The physics world being ticked.
+     */
     public void onPhysicsTick(VxPhysicsWorld world) {
-        physicsExtractor.onPhysicsTick(world);
+        behaviorManager.onPhysicsTick(this.world, this.dataStore);
     }
 
     /**
@@ -178,8 +178,7 @@ public class VxServerBodyManager extends VxAbstractBodyManager {
      */
     public void onGameTick(ServerLevel level) {
         networkDispatcher.onGameTick();
-        physicsExtractor.onGameTick(level);
-        mountingManager.onGameTick();
+        behaviorManager.onServerTick(level, this.dataStore);
     }
 
     //================================================================================
@@ -187,32 +186,33 @@ public class VxServerBodyManager extends VxAbstractBodyManager {
     //================================================================================
 
     /**
-     * Creates and registers a new Rigid Body in the physics world.
+     * Creates and registers a new physics body in the world.
+     * <p>
+     * Unified creation method that handles both rigid and soft simulation.
+     * The body's type determines which Jolt provider is used.
      *
-     * @param type         The registry type of the rigid body.
+     * @param type         The registry type of the body.
      * @param transform    The initial position and rotation.
-     * @param configurator A consumer to apply custom settings (friction, mass, etc.) before the body is added to the simulation.
-     * @param <T>          The specific type of rigid body.
+     * @param configurator A consumer to apply custom settings before the body is added.
      * @return The created body instance, or null if creation failed.
      */
     @Nullable
-    public <T extends VxRigidBody> T createRigidBody(VxBodyType<T> type, VxTransform transform, Consumer<T> configurator) {
-        return createRigidBody(type, transform, EActivation.DontActivate, configurator);
+    public VxBody createBody(VxBodyType type, VxTransform transform, Consumer<VxBody> configurator) {
+        return createBody(type, transform, EActivation.DontActivate, configurator);
     }
 
     /**
-     * Creates and registers a new Rigid Body with a specific activation state.
+     * Creates and registers a new physics body with a specific activation state.
      *
-     * @param type         The registry type of the rigid body.
+     * @param type         The registry type of the body.
      * @param transform    The initial position and rotation.
-     * @param activation   Whether the body should be active (simulating) or sleeping immediately upon creation.
+     * @param activation   Whether the body should be active or sleeping upon creation.
      * @param configurator A consumer to apply custom settings before the body is added.
-     * @param <T>          The specific type of rigid body.
      * @return The created body instance, or null if creation failed.
      */
     @Nullable
-    public <T extends VxRigidBody> T createRigidBody(VxBodyType<T> type, VxTransform transform, EActivation activation, Consumer<T> configurator) {
-        T body = type.create(world, UUID.randomUUID());
+    public VxBody createBody(VxBodyType type, VxTransform transform, EActivation activation, Consumer<VxBody> configurator) {
+        VxBody body = type.create(world, UUID.randomUUID());
         if (body == null) return null;
         configurator.accept(body);
         addConstructedBody(body, activation, transform);
@@ -220,36 +220,29 @@ public class VxServerBodyManager extends VxAbstractBodyManager {
     }
 
     /**
-     * Creates and registers a new Soft Body in the physics world.
-     *
-     * @param type         The registry type of the soft body.
-     * @param transform    The initial position and rotation.
-     * @param configurator A consumer to apply custom settings (cloth settings, stiffness) before the body is added.
-     * @param <T>          The specific type of soft body.
-     * @return The created body instance, or null if creation failed.
+     * Convenience method for creating rigid bodies with typed configurator.
      */
     @Nullable
-    public <T extends VxSoftBody> T createSoftBody(VxBodyType<T> type, VxTransform transform, Consumer<T> configurator) {
-        return createSoftBody(type, transform, EActivation.DontActivate, configurator);
+    @SuppressWarnings("unchecked")
+    public <T extends VxBody> T createRigidBody(VxBodyType type, VxTransform transform, Consumer<T> configurator) {
+        VxBody body = type.create(world, UUID.randomUUID());
+        if (body == null) return null;
+        configurator.accept((T) body);
+        addConstructedBody(body, EActivation.DontActivate, transform);
+        return (T) body;
     }
 
     /**
-     * Creates and registers a new Soft Body with a specific activation state.
-     *
-     * @param type         The registry type of the soft body.
-     * @param transform    The initial position and rotation.
-     * @param activation   Whether the body should be active (simulating) or sleeping immediately upon creation.
-     * @param configurator A consumer to apply custom settings before the body is added.
-     * @param <T>          The specific type of soft body.
-     * @return The created body instance, or null if creation failed.
+     * Convenience method for creating soft bodies with typed configurator.
      */
     @Nullable
-    public <T extends VxSoftBody> T createSoftBody(VxBodyType<T> type, VxTransform transform, EActivation activation, Consumer<T> configurator) {
-        T body = type.create(world, UUID.randomUUID());
+    @SuppressWarnings("unchecked")
+    public <T extends VxBody> T createSoftBody(VxBodyType type, VxTransform transform, Consumer<T> configurator) {
+        VxBody body = type.create(world, UUID.randomUUID());
         if (body == null) return null;
-        configurator.accept(body);
-        addConstructedBody(body, activation, transform);
-        return body;
+        configurator.accept((T) body);
+        addConstructedBody(body, EActivation.DontActivate, transform);
+        return (T) body;
     }
 
     //================================================================================
@@ -285,13 +278,13 @@ public class VxServerBodyManager extends VxAbstractBodyManager {
         Vec3 angularVelocity = new Vec3(dataStore.angVelX[index], dataStore.angVelY[index], dataStore.angVelZ[index]);
         EMotionType motionType = dataStore.motionType[index];
 
-        mountingManager.onBodyAdded(body);
         networkDispatcher.onBodyAdded(body);
 
-        if (body instanceof VxRigidBody rigidBody) {
-            VxJoltBridge.INSTANCE.createAndAddJoltRigidBody(rigidBody, this, linearVelocity, angularVelocity, activation, motionType);
-        } else if (body instanceof VxSoftBody softBody) {
-            VxJoltBridge.INSTANCE.createAndAddJoltSoftBody(softBody, this, linearVelocity, angularVelocity, activation);
+        // Dispatch Jolt creation based on body type's provider (no instanceof needed)
+        if (body.getType().isRigid()) {
+            VxJoltBridge.INSTANCE.createAndAddJoltRigidBody(body, this, linearVelocity, angularVelocity, activation, motionType);
+        } else if (body.getType().isSoft()) {
+            VxJoltBridge.INSTANCE.createAndAddJoltSoftBody(body, this, linearVelocity, angularVelocity, activation);
         }
     }
 
@@ -320,7 +313,7 @@ public class VxServerBodyManager extends VxAbstractBodyManager {
 
         // Deserialize internal state (transform, velocity, vertices, user data) into the body and DataStore.
         // This must occur after addInternal so the body has a valid DataStore index.
-        body.readInternalPersistenceData(data.bodyData());
+        VxBodyCodec.readInternalPersistenceData(body, data.bodyData());
         data.bodyData().release();
 
         int index = body.getDataStoreIndex();
@@ -337,13 +330,12 @@ public class VxServerBodyManager extends VxAbstractBodyManager {
         boolean shouldActivate = linearVelocity.lengthSq() > 0.0001f || angularVelocity.lengthSq() > 0.0001f;
         EActivation activation = shouldActivate ? EActivation.Activate : EActivation.DontActivate;
 
-        mountingManager.onBodyAdded(body);
         networkDispatcher.onBodyAdded(body);
 
-        if (body instanceof VxRigidBody rigidBody) {
-            VxJoltBridge.INSTANCE.createAndAddJoltRigidBody(rigidBody, this, linearVelocity, angularVelocity, activation, motionType);
-        } else if (body instanceof VxSoftBody softBody) {
-            VxJoltBridge.INSTANCE.createAndAddJoltSoftBody(softBody, this, linearVelocity, angularVelocity, activation);
+        if (body.getType().isRigid()) {
+            VxJoltBridge.INSTANCE.createAndAddJoltRigidBody(body, this, linearVelocity, angularVelocity, activation, motionType);
+        } else if (body.getType().isSoft()) {
+            VxJoltBridge.INSTANCE.createAndAddJoltSoftBody(body, this, linearVelocity, angularVelocity, activation);
         }
         return body;
     }
@@ -398,7 +390,6 @@ public class VxServerBodyManager extends VxAbstractBodyManager {
         managedBodies.remove(body.getPhysicsId());
 
         // 2. Notify subsystems
-        mountingManager.onBodyRemoved(body);
         networkDispatcher.onBodyRemoved(body);
 
         // 3. Update spatial tracking
@@ -412,7 +403,10 @@ public class VxServerBodyManager extends VxAbstractBodyManager {
         // 4. Trigger body-specific cleanup hooks
         body.onBodyRemoved(world, reason);
 
-        // 5. Cleanup Constraints
+        // 5. Detach all behaviors
+        behaviorManager.detachAllBehaviors(body);
+
+        // 6. Cleanup Constraints
         world.getConstraintManager().removeConstraintsForBody(body.getPhysicsId());
 
         // 6. Destroy Native Jolt Body
@@ -432,9 +426,6 @@ public class VxServerBodyManager extends VxAbstractBodyManager {
             joltBodyIdToVxBodyMap.remove(body.getBodyId());
         }
 
-        // 8. Notify Lifecycle Listeners
-        notifyBodyRemoved(body);
-
         // Invalidate indices in the body object to prevent accidental reuse
         body.setDataStoreIndex(dataStore, -1);
         body.setNetworkId(-1);
@@ -451,7 +442,7 @@ public class VxServerBodyManager extends VxAbstractBodyManager {
     private void addInternal(VxBody body) {
         if (body == null) return;
         managedBodies.computeIfAbsent(body.getPhysicsId(), id -> {
-            EBodyType type = body instanceof VxSoftBody ? EBodyType.SoftBody : EBodyType.RigidBody;
+            EBodyType type = body.getType().isSoft() ? EBodyType.SoftBody : EBodyType.RigidBody;
 
             // Allocate DataStore slot and automatically set bodies[index] reference
             int index = dataStore.addBody(body, type);
@@ -465,13 +456,20 @@ public class VxServerBodyManager extends VxAbstractBodyManager {
 
             dataStore.isActive[index] = true;
 
+            // --- Behavior Attachment ---
+            // Apply all default behaviors from the body type's bitmask
+            dataStore.behaviorBits[index] = body.getType().getDefaultBehaviors();
+            // Notify each behavior of attachment
+            for (var behavior : behaviorManager.getBehaviors()) {
+                if (behavior.getId().isSet(dataStore.behaviorBits[index])) {
+                    behavior.onAttached(index, body);
+                }
+            }
+
             // Initialize spatial tracking
             long chunkKey = VxSpatialManager.calculateChunkKey(dataStore.posX[index], dataStore.posZ[index]);
             dataStore.chunkKey[index] = chunkKey;
             spatialManager.add(chunkKey, body);
-
-            // Notify Lifecycle Listeners
-            notifyBodyAdded(body);
 
             return body;
         });
@@ -575,7 +573,7 @@ public class VxServerBodyManager extends VxAbstractBodyManager {
      * @param body The soft body to retrieve vertices for.
      * @return An array of flattened vertex coordinates (x, y, z), or null if not available.
      */
-    public float @Nullable [] retrieveSoftBodyVertices(VxSoftBody body) {
+    public float @Nullable [] retrieveSoftBodyVertices(VxBody body) {
         int index = body.getDataStoreIndex();
         if (index == -1) return null;
 
@@ -598,7 +596,7 @@ public class VxServerBodyManager extends VxAbstractBodyManager {
      * @param body     The soft body to update.
      * @param vertices The new flattened vertex coordinates (x, y, z).
      */
-    public void updateSoftBodyVertices(VxSoftBody body, float[] vertices) {
+    public void updateSoftBodyVertices(VxBody body, float[] vertices) {
         int index = body.getDataStoreIndex();
         if (index == -1) return;
 
@@ -612,7 +610,7 @@ public class VxServerBodyManager extends VxAbstractBodyManager {
 
     /**
      * Serializes all physics bodies within a given chunk and queues them for storage.
-     * Only bodies marked as persistent via {@link VxBody#isPersistent()} are included.
+     * Only bodies that have the {@link VxBehaviors#PERSISTENCE} behavior attached are included.
      * Uses the optimized chunk-based batching system.
      *
      * @param pos The position of the chunk to save.
@@ -622,7 +620,7 @@ public class VxServerBodyManager extends VxAbstractBodyManager {
 
         spatialManager.forEachInChunk(pos.toLong(), body -> {
             // Only add the body to the save list if it is marked as persistent.
-            if (body.isPersistent()) {
+            if (behaviorManager.hasBehavior(body, VxBehaviors.PERSISTENCE)) {
                 bodiesInChunk.add(body);
             }
         });
@@ -676,16 +674,9 @@ public class VxServerBodyManager extends VxAbstractBodyManager {
     }
 
     /**
-     * @return The sync manager handling server-side data extraction and synchronization.
+     * @return The behavior manager for composition-based behavior dispatch.
      */
-    public VxServerSyncManager getServerSyncManager() {
-        return serverSyncManager;
-    }
-
-    /**
-     * @return The mounting manager handling entity attachments to physics bodies.
-     */
-    public VxMountingManager getMountingManager() {
-        return mountingManager;
+    public VxBehaviorManager getBehaviorManager() {
+        return behaviorManager;
     }
 }

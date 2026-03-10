@@ -13,7 +13,8 @@ import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.xmx.velthoric.core.body.client.VxRenderState;
-import net.xmx.velthoric.core.body.client.renderer.VxRigidBodyRenderer;
+import net.xmx.velthoric.core.body.client.renderer.VxBodyRenderer;
+import net.xmx.velthoric.core.body.VxBody;
 import net.xmx.velthoric.core.vehicle.part.VxPart;
 import org.joml.Quaternionf;
 
@@ -22,7 +23,7 @@ import org.joml.Quaternionf;
  *
  * @author xI-Mx-Ix
  */
-public class MotorcycleRenderer extends VxRigidBodyRenderer<MotorcycleImpl> {
+public class MotorcycleRenderer extends VxBodyRenderer<VxBody> {
 
     private static final BlockState CHASSIS_STATE = Blocks.RED_CONCRETE.defaultBlockState();
 
@@ -30,7 +31,7 @@ public class MotorcycleRenderer extends VxRigidBodyRenderer<MotorcycleImpl> {
     private static final Vec3 CHASSIS_HALF_EXTENTS = new Vec3(0.2f, 0.3f, 0.4f);
 
     @Override
-    public void render(MotorcycleImpl body, PoseStack poseStack, MultiBufferSource bufferSource, float partialTicks, int packedLight, VxRenderState renderState) {
+    public void render(VxBody body, PoseStack poseStack, MultiBufferSource bufferSource, float partialTicks, int packedLight, VxRenderState renderState) {
         poseStack.pushPose();
 
         // Apply Main Body Transform
@@ -46,7 +47,8 @@ public class MotorcycleRenderer extends VxRigidBodyRenderer<MotorcycleImpl> {
         poseStack.popPose();
 
         // 2. Render Parts (Wheels, Seats, etc.) using their own assigned renderers
-        for (VxPart part : body.getParts()) {
+        MotorcycleImpl mc = (MotorcycleImpl) body;
+        for (VxPart part : mc.getParts()) {
             part.render(poseStack, bufferSource, partialTicks, packedLight);
         }
 

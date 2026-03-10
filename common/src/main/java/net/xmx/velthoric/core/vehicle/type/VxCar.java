@@ -7,7 +7,7 @@ package net.xmx.velthoric.core.vehicle.type;
 import com.github.stephengold.joltjni.*;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
-import net.xmx.velthoric.core.body.registry.VxBodyType;
+import net.xmx.velthoric.core.body.VxBodyType;
 import net.xmx.velthoric.core.vehicle.VxWheeledVehicle;
 import net.xmx.velthoric.core.vehicle.config.VxCarConfig;
 import net.xmx.velthoric.core.vehicle.config.VxEngineConfig;
@@ -29,12 +29,12 @@ public abstract class VxCar extends VxWheeledVehicle {
 
     private WheeledVehicleController controller;
 
-    public VxCar(VxBodyType<? extends VxCar> type, VxPhysicsWorld world, UUID id, VxCarConfig config) {
+    public VxCar(VxBodyType type, VxPhysicsWorld world, UUID id, VxCarConfig config) {
         super(type, world, id, config);
     }
 
     @Environment(EnvType.CLIENT)
-    public VxCar(VxBodyType<? extends VxCar> type, UUID id, VxCarConfig config) {
+    public VxCar(VxBodyType type, UUID id, VxCarConfig config) {
         super(type, id, config);
     }
 

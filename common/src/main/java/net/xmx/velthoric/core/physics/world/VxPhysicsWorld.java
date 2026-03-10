@@ -12,7 +12,6 @@ import net.minecraft.world.level.Level;
 import net.xmx.velthoric.core.body.server.VxServerBodyManager;
 import net.xmx.velthoric.core.constraint.manager.VxConstraintManager;
 import net.xmx.velthoric.core.physics.VxPhysicsBootstrap;
-import net.xmx.velthoric.core.physics.buoyancy.VxBuoyancyManager;
 import net.xmx.velthoric.core.ragdoll.VxRagdollManager;
 import net.xmx.velthoric.core.terrain.VxTerrainSystem;
 import net.xmx.velthoric.init.VxMainClass;
@@ -61,7 +60,6 @@ public final class VxPhysicsWorld implements Runnable, Executor {
     private final VxServerBodyManager bodyManager;
     private final VxConstraintManager constraintManager;
     private final VxTerrainSystem terrainSystem;
-    private final VxBuoyancyManager buoyancyManager;
     private final VxRagdollManager ragdollManager;
 
     private final VxFrameTimer physicsFrameTimer = new VxFrameTimer();
@@ -82,7 +80,6 @@ public final class VxPhysicsWorld implements Runnable, Executor {
         this.bodyManager = new VxServerBodyManager(this);
         this.constraintManager = new VxConstraintManager(this.bodyManager);
         this.terrainSystem = new VxTerrainSystem(this, this.level);
-        this.buoyancyManager = new VxBuoyancyManager(this);
         this.ragdollManager = new VxRagdollManager(this);
     }
 
@@ -184,6 +181,8 @@ public final class VxPhysicsWorld implements Runnable, Executor {
         if (this.timeAccumulator >= FIXED_TIME_STEP) {
             long startTime = System.nanoTime();
 
+            this.onPrePhysicsTick();
+
             int error = this.physicsSystem.update(FIXED_TIME_STEP, 1, this.tempAllocator, this.jobSystem);
             if (error != EPhysicsUpdateError.None) {
                 VxMainClass.LOGGER.error("Jolt physics update failed with error code: {}. Shutting down world.", error);
@@ -198,15 +197,17 @@ public final class VxPhysicsWorld implements Runnable, Executor {
         }
     }
 
+    public void onPrePhysicsTick() {
+        this.bodyManager.onPrePhysicsTick(this);
+    }
+
 
     public void onPhysicsTick() {
         this.bodyManager.onPhysicsTick(this);
-        this.buoyancyManager.applyBuoyancyForces(FIXED_TIME_STEP);
     }
 
     public void onGameTick(ServerLevel level) {
         this.bodyManager.onGameTick(level);
-        this.buoyancyManager.updateFluidStates();
     }
 
     private void processCommandQueue() {
@@ -261,9 +262,6 @@ public final class VxPhysicsWorld implements Runnable, Executor {
         if (this.bodyManager != null) {
             this.bodyManager.shutdown();
         }
-        if (this.buoyancyManager != null) {
-            this.buoyancyManager.shutdown();
-        }
     }
 
     private void cleanupJolt() {
@@ -305,10 +303,6 @@ public final class VxPhysicsWorld implements Runnable, Executor {
         return this.terrainSystem;
     }
 
-    public VxBuoyancyManager getBuoyancyManager() {
-        return this.buoyancyManager;
-    }
-
     public VxRagdollManager getRagdollManager() {
         return this.ragdollManager;
     }
@@ -321,7 +315,7 @@ public final class VxPhysicsWorld implements Runnable, Executor {
         return this.dimensionKey;
     }
 
-    public float getFixedTimeStep() {
+    public static float getFixedTimeStep() {
         return FIXED_TIME_STEP;
     }
 
@@ -354,12 +348,6 @@ public final class VxPhysicsWorld implements Runnable, Executor {
     public static VxTerrainSystem getTerrainSystem(ResourceKey<Level> dimensionKey) {
         VxPhysicsWorld world = get(dimensionKey);
         return world != null ? world.getTerrainSystem() : null;
-    }
-
-    @Nullable
-    public static VxBuoyancyManager getBuoyancyManager(ResourceKey<Level> dimensionKey) {
-        VxPhysicsWorld world = get(dimensionKey);
-        return world != null ? world.getBuoyancyManager() : null;
     }
 
     @Nullable

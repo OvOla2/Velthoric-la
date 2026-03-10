@@ -6,10 +6,7 @@ package net.xmx.velthoric.core.network.internal;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.PooledByteBufAllocator;
-import it.unimi.dsi.fastutil.ints.IntArrayList;
-import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
-import it.unimi.dsi.fastutil.ints.IntSet;
-import it.unimi.dsi.fastutil.ints.IntSets;
+import it.unimi.dsi.fastutil.ints.*;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
@@ -18,14 +15,16 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.ChunkPos;
 import net.xmx.velthoric.config.VxModConfig;
+import net.xmx.velthoric.core.behavior.VxBehaviors;
+import net.xmx.velthoric.core.network.synchronization.behavior.VxSyncBehavior;
+import net.xmx.velthoric.core.body.server.VxServerBodyDataStore;
 import net.xmx.velthoric.core.body.server.VxServerBodyManager;
+import net.xmx.velthoric.core.body.VxBody;
+import net.xmx.velthoric.core.network.internal.packet.S2CRemoveBodyBatchPacket;
+import net.xmx.velthoric.core.network.internal.packet.S2CSpawnBodyBatchPacket;
 import net.xmx.velthoric.init.VxMainClass;
 import net.xmx.velthoric.network.IVxNetPacket;
 import net.xmx.velthoric.network.VxNetworking;
-import net.xmx.velthoric.core.body.server.VxServerBodyDataStore;
-import net.xmx.velthoric.core.network.internal.packet.S2CRemoveBodyBatchPacket;
-import net.xmx.velthoric.core.network.internal.packet.S2CSpawnBodyBatchPacket;
-import net.xmx.velthoric.core.body.type.VxBody;
 import net.xmx.velthoric.util.VxChunkUtil;
 
 import java.nio.ByteBuffer;
@@ -112,6 +111,16 @@ public class VxNetworkDispatcher {
     private final Long2ObjectMap<IntArrayList> dirtyVerticesByChunk = new Long2ObjectOpenHashMap<>();
 
     /**
+     * Internal cache of indices to minimize the time spent inside the dataStore lock.
+     */
+    private final IntArrayList dirtyIndicesSnapshot = new IntArrayList(4096);
+
+    /**
+     * Pool of reusable IntArrayLists to prevent garbage collector pressure during grouping.
+     */
+    private final ObjectArrayList<IntArrayList> listPool = new ObjectArrayList<>();
+
+    /**
      * Constructs a new dispatcher and initializes network tuning parameters from config.
      *
      * @param level   The server level.
@@ -181,7 +190,13 @@ public class VxNetworkDispatcher {
                 }
 
                 // Sync custom data
-                this.manager.getServerSyncManager().sendSynchronizedDataUpdates(this);
+                VxSyncBehavior behavior = this.manager.getBehaviorManager().getBehavior(VxBehaviors.CUSTOM_DATA_SYNC);
+                if (behavior != null) {
+                    behavior.broadcastS2CUpdates(this.manager, this);
+                }
+
+                // Clean up grouping buffers and return them to the pool
+                recycleLists();
 
                 long durationMs = (System.nanoTime() - start) / 1_000_000;
                 Thread.sleep(Math.max(0, NETWORK_THREAD_TICK_RATE_MS - durationMs));
@@ -199,31 +214,67 @@ public class VxNetworkDispatcher {
      * needing updates by their chunk coordinate.
      */
     private void prepareUpdateBatches() {
-        dirtyBodiesByChunk.clear();
-        dirtyVerticesByChunk.clear();
+        dirtyIndicesSnapshot.clear();
 
+        // Atomically retrieve dirty indices to minimize lock duration
         synchronized (dataStore) {
-            for (int i = 0; i < dataStore.getCapacity(); i++) {
-                if (dataStore.networkId[i] == -1) continue;
+            if (dataStore.dirtyIndices.isEmpty()) return;
+            IntIterator it = dataStore.dirtyIndices.iterator();
+            while (it.hasNext()) {
+                dirtyIndicesSnapshot.add(it.nextInt());
+            }
+            dataStore.dirtyIndices.clear();
+        }
 
-                boolean transformDirty = dataStore.isTransformDirty[i];
-                boolean vertexDirty = dataStore.isVertexDataDirty[i];
+        // Group indices by chunk outside the lock
+        for (int i = 0; i < dirtyIndicesSnapshot.size(); i++) {
+            int idx = dirtyIndicesSnapshot.getInt(i);
+            if (dataStore.networkId[idx] == -1) continue;
+            if (!VxBehaviors.NET_SYNC.isSet(dataStore.behaviorBits[idx])) continue;
 
-                if (transformDirty || vertexDirty) {
-                    // Use cached chunk key from DataStore
-                    long chunkPosLong = dataStore.chunkKey[i];
+            long chunkPosLong = dataStore.chunkKey[idx];
 
-                    if (transformDirty) {
-                        dirtyBodiesByChunk.computeIfAbsent(chunkPosLong, k -> new IntArrayList()).add(i);
-                        dataStore.isTransformDirty[i] = false;
-                    }
-                    if (vertexDirty) {
-                        dirtyVerticesByChunk.computeIfAbsent(chunkPosLong, k -> new IntArrayList()).add(i);
-                        dataStore.isVertexDataDirty[i] = false;
-                    }
-                }
+            if (dataStore.isTransformDirty[idx]) {
+                getOrCreateList(dirtyBodiesByChunk, chunkPosLong).add(idx);
+                dataStore.isTransformDirty[idx] = false;
+            }
+
+            if (dataStore.isVertexDataDirty[idx]) {
+                getOrCreateList(dirtyVerticesByChunk, chunkPosLong).add(idx);
+                dataStore.isVertexDataDirty[idx] = false;
             }
         }
+    }
+
+    /**
+     * Helper to retrieve or create an IntArrayList for a specific chunk, utilizing the object pool.
+     */
+    private IntArrayList getOrCreateList(Long2ObjectMap<IntArrayList> map, long key) {
+        IntArrayList list = map.get(key);
+        if (list == null) {
+            if (listPool.isEmpty()) {
+                list = new IntArrayList(16);
+            } else {
+                list = listPool.remove(listPool.size() - 1);
+                list.clear();
+            }
+            map.put(key, list);
+        }
+        return list;
+    }
+
+    /**
+     * Returns all used lists to the pool and clears the grouping maps.
+     */
+    private void recycleLists() {
+        for (IntArrayList list : dirtyBodiesByChunk.values()) {
+            listPool.add(list);
+        }
+        for (IntArrayList list : dirtyVerticesByChunk.values()) {
+            listPool.add(list);
+        }
+        dirtyBodiesByChunk.clear();
+        dirtyVerticesByChunk.clear();
     }
 
     /**
@@ -366,6 +417,13 @@ public class VxNetworkDispatcher {
      * @param body   The body.
      */
     public void trackBodyForPlayer(ServerPlayer player, VxBody body) {
+        // Prevent tracking a body if it doesn't want any network synchronization at all
+        int index = body.getDataStoreIndex();
+        if (index == -1) return;
+
+        long behaviorBits = dataStore.behaviorBits[index];
+        if (!VxBehaviors.NET_SYNC.isSet(behaviorBits) && !VxBehaviors.CUSTOM_DATA_SYNC.isSet(behaviorBits)) return;
+
         IntSet tracked = playerTrackedBodies.computeIfAbsent(player.getUUID(), k -> IntSets.synchronize(new IntOpenHashSet()));
         if (tracked.add(body.getNetworkId())) {
             synchronized (pendingSpawns) {
@@ -402,7 +460,7 @@ public class VxNetworkDispatcher {
      */
     private void processPendingRemovals() {
         if (pendingRemovals.isEmpty()) return;
-        synchronized (pendingRemovals) {
+        synchronized (pendingSpawns) {
             var it = pendingRemovals.entrySet().iterator();
             while (it.hasNext()) {
                 var entry = it.next();
@@ -528,8 +586,6 @@ public class VxNetworkDispatcher {
         playerTrackedBodies.remove(player.getUUID());
         synchronized (pendingSpawns) {
             pendingSpawns.remove(player);
-        }
-        synchronized (pendingRemovals) {
             pendingRemovals.remove(player);
         }
     }

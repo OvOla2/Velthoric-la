@@ -9,7 +9,6 @@ import it.unimi.dsi.fastutil.objects.Object2IntMap;
 import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import net.xmx.velthoric.core.AbstractDataStore;
-import net.xmx.velthoric.core.body.type.VxBody;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.Collection;
@@ -139,6 +138,15 @@ public abstract class VxBodyDataStore extends AbstractDataStore {
     public boolean[] isActive;
 
     /**
+     * Behavior bitmask for each body.
+     * <p>
+     * Each bit corresponds to a registered {@link net.xmx.velthoric.core.behavior.VxBehaviorId}.
+     * A set bit indicates that the body has the corresponding behavior attached.
+     * This enables O(1) membership checks in hot loops via bitwise AND.
+     */
+    public long[] behaviorBits;
+
+    /**
      * Direct reference array to the VxBody objects.
      * <p>
      * This array mirrors the internal structure-of-arrays indices. It allows O(1) access
@@ -228,6 +236,7 @@ public abstract class VxBodyDataStore extends AbstractDataStore {
         velX[index] = velY[index] = velZ[index] = 0f;
         vertexData[index] = null;
         isActive[index] = false;
+        behaviorBits[index] = 0L;
     }
 
     /**
@@ -264,6 +273,7 @@ public abstract class VxBodyDataStore extends AbstractDataStore {
 
         vertexData = grow(vertexData, newCapacity);
         isActive = grow(isActive, newCapacity);
+        behaviorBits = grow(behaviorBits, newCapacity);
 
         // Reallocate the direct reference array.
         VxBody[] newBodies = new VxBody[newCapacity];

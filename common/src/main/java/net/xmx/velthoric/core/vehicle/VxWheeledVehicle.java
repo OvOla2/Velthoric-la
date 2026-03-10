@@ -16,7 +16,7 @@ import net.xmx.velthoric.core.body.VxRemovalReason;
 import net.xmx.velthoric.core.network.synchronization.VxDataSerializers;
 import net.xmx.velthoric.core.network.synchronization.VxSynchronizedData;
 import net.xmx.velthoric.core.network.synchronization.accessor.VxServerAccessor;
-import net.xmx.velthoric.core.body.registry.VxBodyType;
+import net.xmx.velthoric.core.body.VxBodyType;
 import net.xmx.velthoric.core.vehicle.config.VxWheeledVehicleConfig;
 import net.xmx.velthoric.core.vehicle.module.VxSteeringModule;
 import net.xmx.velthoric.core.vehicle.module.transmission.VxAutomaticTransmissionModule;
@@ -150,7 +150,7 @@ public abstract class VxWheeledVehicle extends VxVehicle {
      * @param id     The unique identifier.
      * @param config The vehicle configuration.
      */
-    public VxWheeledVehicle(VxBodyType<? extends VxWheeledVehicle> type, VxPhysicsWorld world, UUID id, VxWheeledVehicleConfig config) {
+    public VxWheeledVehicle(VxBodyType type, VxPhysicsWorld world, UUID id, VxWheeledVehicleConfig config) {
         super(type, world, id, config);
         this.initializeComponents();
     }
@@ -163,7 +163,7 @@ public abstract class VxWheeledVehicle extends VxVehicle {
      * @param config The vehicle configuration.
      */
     @Environment(EnvType.CLIENT)
-    public VxWheeledVehicle(VxBodyType<? extends VxWheeledVehicle> type, UUID id, VxWheeledVehicleConfig config) {
+    public VxWheeledVehicle(VxBodyType type, UUID id, VxWheeledVehicleConfig config) {
         super(type, id, config);
         this.initializeComponents();
     }

@@ -8,8 +8,10 @@ import com.github.stephengold.joltjni.enumerate.EBodyType;
 import com.github.stephengold.joltjni.enumerate.EMotionType;
 import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
+import it.unimi.dsi.fastutil.ints.IntSet;
 import net.xmx.velthoric.core.body.VxBodyDataStore;
-import net.xmx.velthoric.core.body.type.VxBody;
+import net.xmx.velthoric.core.body.VxBody;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.UUID;
@@ -109,11 +111,6 @@ public class VxServerBodyDataStore extends VxBodyDataStore {
     // --- Dirty Flags for Synchronization ---
 
     /**
-     * Flag indicating that the game logic has modified this body's state, requiring a sync TO Jolt.
-     */
-    public boolean[] isGameStateDirty;
-
-    /**
      * Flag indicating that the body's transform (pos/rot/vel) has changed, requiring a network sync TO Clients.
      */
     public boolean[] isTransformDirty;
@@ -127,6 +124,12 @@ public class VxServerBodyDataStore extends VxBodyDataStore {
      * Flag indicating that the body's custom data has changed, requiring a network sync TO Clients.
      */
     public boolean[] isCustomDataDirty;
+
+    /**
+     * Set of indices that have pending network updates.
+     * Used to avoid O(N) scanning in the NetworkDispatcher.
+     */
+    public final IntSet dirtyIndices = new IntOpenHashSet(2048);
 
     /**
      * The server timestamp of the last physics update for this body.
@@ -171,7 +174,11 @@ public class VxServerBodyDataStore extends VxBodyDataStore {
     @Override
     @Nullable
     public synchronized Integer removeBody(UUID id) {
-        return super.removeBody(id);
+        Integer index = super.removeBody(id);
+        if (index != null) {
+            dirtyIndices.remove((int) index);
+        }
+        return index;
     }
 
     /**
@@ -198,11 +205,11 @@ public class VxServerBodyDataStore extends VxBodyDataStore {
         }
         networkId[index] = -1;
 
-        isGameStateDirty[index] = false;
         isTransformDirty[index] = false;
         isVertexDataDirty[index] = false;
         isCustomDataDirty[index] = false;
         lastUpdateTimestamp[index] = 0L;
+        dirtyIndices.remove(index);
     }
 
     /**
@@ -230,7 +237,6 @@ public class VxServerBodyDataStore extends VxBodyDataStore {
         chunkKey = grow(chunkKey, newCapacity);
         networkId = grow(networkId, newCapacity);
 
-        isGameStateDirty = grow(isGameStateDirty, newCapacity);
         isTransformDirty = grow(isTransformDirty, newCapacity);
         isVertexDataDirty = grow(isVertexDataDirty, newCapacity);
         isCustomDataDirty = grow(isCustomDataDirty, newCapacity);
@@ -275,6 +281,7 @@ public class VxServerBodyDataStore extends VxBodyDataStore {
     @Override
     public synchronized void clear() {
         networkIdToUuid.clear();
+        dirtyIndices.clear();
         super.clear();
     }
 }
