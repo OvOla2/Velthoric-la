@@ -25,6 +25,7 @@ import net.xmx.velthoric.builtin.sphere.SphereRenderer;
 import net.xmx.velthoric.builtin.sphere.SphereRigidBody;
 import net.xmx.velthoric.core.body.registry.VxBodyRegistry;
 import net.xmx.velthoric.core.body.VxBodyType;
+import net.xmx.velthoric.core.vehicle.VxWheeledVehicle;
 import net.xmx.velthoric.core.ragdoll.body.VxBodyPartRigidBody;
 import net.xmx.velthoric.core.ragdoll.body.VxRagdollBodyPartRenderer;
 import net.xmx.velthoric.item.chaincreator.body.VxChainPartRenderer;
@@ -106,7 +107,9 @@ public class VxRegisteredBodies {
             .buoyant()
             .netSync()
             .mountable()
+            .ticking()
             .customDataSync()
+            .persistence(VxWheeledVehicle::writePersistence, VxWheeledVehicle::readPersistence)
             .build(ResourceLocation.tryBuild("velthoric", "car"));
 
     public static final VxBodyType MOTORCYCLE = VxBodyType.Builder
@@ -115,7 +118,9 @@ public class VxRegisteredBodies {
             .buoyant()
             .netSync()
             .mountable()
+            .ticking()
             .customDataSync()
+            .persistence(VxWheeledVehicle::writePersistence, VxWheeledVehicle::readPersistence)
             .build(ResourceLocation.tryBuild("velthoric", "motorcycle"));
 
     // --- Internal Bodies ---
@@ -127,6 +132,7 @@ public class VxRegisteredBodies {
             .buoyant()
             .netSync()
             .customDataSync()
+            .persistence(VxChainPartRigidBody::writePersistence, VxChainPartRigidBody::readPersistence)
             .build(ResourceLocation.tryBuild("velthoric", "chain_part"));
 
     public static final VxBodyType BODY_PART = VxBodyType.Builder
@@ -136,6 +142,7 @@ public class VxRegisteredBodies {
             .buoyant()
             .netSync()
             .customDataSync()
+            .persistence(VxBodyPartRigidBody::writePersistence, VxBodyPartRigidBody::readPersistence)
             .build(ResourceLocation.tryBuild("velthoric", "body_part"));
 
     /**
