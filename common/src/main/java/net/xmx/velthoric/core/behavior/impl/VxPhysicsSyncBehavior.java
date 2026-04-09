@@ -10,13 +10,13 @@ import com.github.stephengold.joltjni.readonly.*;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import net.xmx.velthoric.core.behavior.VxBehavior;
 import net.xmx.velthoric.core.behavior.VxBehaviorId;
-import net.xmx.velthoric.core.behavior.VxBehaviors;
 import net.xmx.velthoric.core.body.VxBody;
 import net.xmx.velthoric.core.body.server.VxServerBodyDataStore;
 import net.xmx.velthoric.core.body.server.VxServerBodyDataContainer;
 import net.xmx.velthoric.core.body.server.VxServerBodyManager;
 import net.xmx.velthoric.core.body.tracking.VxSpatialManager;
 import net.xmx.velthoric.core.physics.world.VxPhysicsWorld;
+import net.xmx.velthoric.init.VxMainClass;
 
 import java.nio.ByteBuffer;
 import java.nio.DoubleBuffer;
@@ -32,6 +32,12 @@ import java.nio.FloatBuffer;
  * @author xI-Mx-Ix
  */
 public class VxPhysicsSyncBehavior implements VxBehavior {
+
+    /**
+     * The unique identifier for this behavior.
+     * Consumed by the behavior manager for bitmask allocation and dispatch.
+     */
+    public static final VxBehaviorId ID = new VxBehaviorId(VxMainClass.MODID, "PhysicsSync");
 
     /**
      * Number of bodies processed in a single JNI batch operation.
@@ -93,11 +99,28 @@ public class VxPhysicsSyncBehavior implements VxBehavior {
      */
     private final ThreadLocal<FloatBuffer> softBodyBufferCache = ThreadLocal.withInitial(() -> Jolt.newDirectFloatBuffer(1024));
 
-    @Override
-    public VxBehaviorId getId() {
-        return VxBehaviors.PHYSICS_SYNC;
+    /**
+     * Default constructor.
+     */
+    public VxPhysicsSyncBehavior() {
     }
 
+    /**
+     * Retrieves the unique identifier for this behavior.
+     *
+     * @return The behavior ID.
+     */
+    @Override
+    public VxBehaviorId getId() {
+        return ID;
+    }
+
+    /**
+     * Extracts results from the Jolt simulation and synchronizes them to the data store.
+     *
+     * @param world     The physics world.
+     * @param dataStore The server body data store.
+     */
     @Override
     public void onPhysicsTick(VxPhysicsWorld world, VxServerBodyDataStore dataStore) {
         long timestampNanos = System.nanoTime();
@@ -160,6 +183,7 @@ public class VxPhysicsSyncBehavior implements VxBehavior {
      * @param timestampNanos Current timestamp.
      * @param world          The physics world.
      * @param dataStore      The server data store.
+     * @param c              The data container.
      * @param bodyInterface  The native interface.
      * @param ids            The array of body IDs to process.
      * @param count          Number of bodies in this batch.
@@ -269,7 +293,7 @@ public class VxPhysicsSyncBehavior implements VxBehavior {
                         c.aabbMaxY[i] = max.getY();
                         c.aabbMaxZ[i] = max.getZ();
 
-                        if (isJoltBodyActive && VxBehaviors.SOFT_PHYSICS.isSet(c.behaviorBits[i])) {
+                        if (isJoltBodyActive && VxSoftPhysicsBehavior.ID.isSet(c.behaviorBits[i])) {
                             RVec3 pos = tempPos.get();
                             pos.set(c.posX[i], c.posY[i], c.posZ[i]);
                             updateSoftBodyVertices(c, dataStore, body, pos, i);
@@ -283,6 +307,7 @@ public class VxPhysicsSyncBehavior implements VxBehavior {
     /**
      * Synchronizes soft body vertex data for deformable objects.
      *
+     * @param c              The data container.
      * @param dataStore    The server data store.
      * @param body         The native body.
      * @param bodyPosition The body's center of mass position.

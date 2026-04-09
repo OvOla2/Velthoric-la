@@ -8,12 +8,12 @@ import com.github.stephengold.joltjni.readonly.ConstBodyLockInterface;
 import net.minecraft.server.level.ServerLevel;
 import net.xmx.velthoric.core.behavior.VxBehavior;
 import net.xmx.velthoric.core.behavior.VxBehaviorId;
-import net.xmx.velthoric.core.behavior.VxBehaviors;
 import net.xmx.velthoric.core.body.server.VxServerBodyDataStore;
 import net.xmx.velthoric.core.physics.buoyancy.VxBuoyancyDataStore;
 import net.xmx.velthoric.core.physics.buoyancy.phase.VxBuoyancyBroadPhase;
 import net.xmx.velthoric.core.physics.buoyancy.phase.VxBuoyancyNarrowPhase;
 import net.xmx.velthoric.core.physics.world.VxPhysicsWorld;
+import net.xmx.velthoric.init.VxMainClass;
 
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -29,7 +29,14 @@ import java.util.concurrent.atomic.AtomicReference;
 public class VxBuoyancyBehavior implements VxBehavior {
 
     // --- Phase Handlers ---
+    /**
+     * The handler responsible for identifying potential contacts.
+     */
     private final VxBuoyancyBroadPhase broadPhase;
+
+    /**
+     * The handler responsible for applying precise fluid forces.
+     */
     private final VxBuoyancyNarrowPhase narrowPhase;
 
     // --- Non-blocking Triple Buffering ---
@@ -48,6 +55,11 @@ public class VxBuoyancyBehavior implements VxBehavior {
      */
     private VxBuoyancyDataStore readingBuffer;
 
+    /**
+     * Initializes the buoyancy behavior.
+     *
+     * @param world The physics world this behavior belongs to.
+     */
     public VxBuoyancyBehavior(VxPhysicsWorld world) {
         this.broadPhase = new VxBuoyancyBroadPhase(world);
         this.narrowPhase = new VxBuoyancyNarrowPhase(world);
@@ -57,11 +69,28 @@ public class VxBuoyancyBehavior implements VxBehavior {
         this.readingBuffer = new VxBuoyancyDataStore();
     }
 
+    /**
+     * The unique identifier for this behavior.
+     * Consumed by the behavior manager for bitmask allocation and dispatch.
+     */
+    public static final VxBehaviorId ID = new VxBehaviorId(VxMainClass.MODID, "Buoyancy");
+
+    /**
+     * Retrieves the unique identifier for this behavior.
+     *
+     * @return The behavior ID.
+     */
     @Override
     public VxBehaviorId getId() {
-        return VxBehaviors.BUOYANCY;
+        return ID;
     }
 
+    /**
+     * Called during the physics simulation step to apply buoyancy forces.
+     *
+     * @param world The physics world.
+     * @param store The server body data store.
+     */
     @Override
     public void onPhysicsTick(VxPhysicsWorld world, VxServerBodyDataStore store) {
         // Exchange the current reading buffer with the latest published one.
@@ -76,6 +105,12 @@ public class VxBuoyancyBehavior implements VxBehavior {
         narrowPhase.applyForces(lockInterface, VxPhysicsWorld.getFixedTimeStep(), readingBuffer);
     }
 
+    /**
+     * Called during the server game tick to trigger the broad phase scan.
+     *
+     * @param level The server level.
+     * @param store The server body data store.
+     */
     @Override
     public void onServerTick(ServerLevel level, VxServerBodyDataStore store) {
         // Clear the private filling buffer to start a fresh scan.

@@ -9,10 +9,8 @@ import io.netty.buffer.ByteBuf;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.resources.ResourceLocation;
-import net.xmx.velthoric.config.VxModConfig;
 import net.xmx.velthoric.core.behavior.VxBehavior;
 import net.xmx.velthoric.core.behavior.VxBehaviorManager;
-import net.xmx.velthoric.core.behavior.VxBehaviors;
 import net.xmx.velthoric.core.network.synchronization.behavior.VxSyncBehavior;
 import net.xmx.velthoric.core.body.VxAbstractBodyManager;
 import net.xmx.velthoric.core.body.client.time.VxClientClock;
@@ -62,7 +60,7 @@ public class VxClientBodyManager extends VxAbstractBodyManager {
      * can smooth over more network jitter but increases perceived latency.
      * Value is in nanoseconds (150ms).
      */
-    private final long interpolationDelayNanos;
+    private final long interpolationDelayNanos = 150_000_000L;
 
     /**
      * The data store holding all body states in a Structure of Arrays format.
@@ -100,7 +98,6 @@ public class VxClientBodyManager extends VxAbstractBodyManager {
      * and mounting manager.
      */
     private VxClientBodyManager() {
-        this.interpolationDelayNanos = VxModConfig.CLIENT.interpolationDelayNanos.get();
         this.behaviorManager = new VxBehaviorManager();
     }
 
@@ -322,7 +319,7 @@ public class VxClientBodyManager extends VxAbstractBodyManager {
 
                 if (body != null) {
                     // Notify sync behavior to stop tracking dirtiness for this body
-                    VxSyncBehavior sync = behaviorManager.getBehavior(VxBehaviors.CUSTOM_DATA_SYNC);
+                    VxSyncBehavior sync = behaviorManager.getBehavior(VxSyncBehavior.ID);
                     if (sync != null) sync.onBodyRemoved(body);
 
                     // Notify the body that it has been removed from the client level.
@@ -345,7 +342,7 @@ public class VxClientBodyManager extends VxAbstractBodyManager {
      * @param body The body that changed.
      */
     public void markBodyDirty(VxBody body) {
-        VxSyncBehavior sync = behaviorManager.getBehavior(VxBehaviors.CUSTOM_DATA_SYNC);
+        VxSyncBehavior sync = behaviorManager.getBehavior(VxSyncBehavior.ID);
         if (sync != null) sync.markDirtyC2S(body);
     }
 
@@ -357,7 +354,7 @@ public class VxClientBodyManager extends VxAbstractBodyManager {
      * @param data      The buffer containing the data.
      */
     public void updateSynchronizedData(int networkId, ByteBuf data) {
-        VxSyncBehavior sync = behaviorManager.getBehavior(VxBehaviors.CUSTOM_DATA_SYNC);
+        VxSyncBehavior sync = behaviorManager.getBehavior(VxSyncBehavior.ID);
         if (sync != null) sync.applyS2CUpdate(this, networkId, data);
     }
 
@@ -368,7 +365,7 @@ public class VxClientBodyManager extends VxAbstractBodyManager {
     public void clearAll() {
         store.clear();
         this.clearInternal();
-        VxSyncBehavior sync = behaviorManager.getBehavior(VxBehaviors.CUSTOM_DATA_SYNC);
+        VxSyncBehavior sync = behaviorManager.getBehavior(VxSyncBehavior.ID);
         if (sync != null) sync.clear();
         isClockOffsetInitialized = false;
         clockOffsetNanos = 0L;

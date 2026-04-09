@@ -14,8 +14,7 @@ import net.minecraft.server.level.ChunkMap;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.ChunkPos;
-import net.xmx.velthoric.config.VxModConfig;
-import net.xmx.velthoric.core.behavior.VxBehaviors;
+import net.xmx.velthoric.core.network.internal.behavior.VxNetSyncBehavior;
 import net.xmx.velthoric.core.network.synchronization.behavior.VxSyncBehavior;
 import net.xmx.velthoric.core.body.server.VxServerBodyDataStore;
 import net.xmx.velthoric.core.body.server.VxServerBodyDataContainer;
@@ -74,12 +73,12 @@ public class VxNetworkDispatcher {
     /**
      * Frequency of the network synchronization thread in milliseconds.
      */
-    private final int NETWORK_THREAD_TICK_RATE_MS;
+    private final int NETWORK_THREAD_TICK_RATE_MS = 10;
 
     /**
      * Maximum allowed bytes for a single packet payload to prevent network overflow.
      */
-    private final int MAX_PACKET_PAYLOAD_SIZE;
+    private final int MAX_PACKET_PAYLOAD_SIZE = 128 * 1024;
 
     /**
      * Maps player UUIDs to the set of body network IDs they are currently tracking.
@@ -132,9 +131,6 @@ public class VxNetworkDispatcher {
         this.manager = manager;
         this.dataStore = manager.getDataStore();
         this.packetFactory = new VxPacketFactory(manager);
-
-        this.NETWORK_THREAD_TICK_RATE_MS = VxModConfig.NETWORK.networkTickRate.get();
-        this.MAX_PACKET_PAYLOAD_SIZE = VxModConfig.NETWORK.maxPayloadSize.get();
     }
 
     /**
@@ -191,7 +187,7 @@ public class VxNetworkDispatcher {
                 }
 
                 // Sync custom data
-                VxSyncBehavior behavior = this.manager.getBehaviorManager().getBehavior(VxBehaviors.CUSTOM_DATA_SYNC);
+                VxSyncBehavior behavior = this.manager.getBehaviorManager().getBehavior(VxSyncBehavior.ID);
                 if (behavior != null) {
                     behavior.broadcastS2CUpdates(this.manager, this);
                 }
@@ -232,7 +228,7 @@ public class VxNetworkDispatcher {
         for (int i = 0; i < dirtyIndicesSnapshot.size(); i++) {
             int idx = dirtyIndicesSnapshot.getInt(i);
             if (idx >= c.getCapacity() || c.networkId[idx] == -1) continue;
-            if (!VxBehaviors.NET_SYNC.isSet(c.behaviorBits[idx])) continue;
+            if (!VxNetSyncBehavior.ID.isSet(c.behaviorBits[idx])) continue;
 
             long chunkPosLong = c.chunkKey[idx];
 
@@ -427,7 +423,7 @@ public class VxNetworkDispatcher {
 
         VxServerBodyDataContainer c = dataStore.serverCurrent();
         long behaviorBits = c.behaviorBits[index];
-        if (!VxBehaviors.NET_SYNC.isSet(behaviorBits) && !VxBehaviors.CUSTOM_DATA_SYNC.isSet(behaviorBits)) return;
+        if (!VxNetSyncBehavior.ID.isSet(behaviorBits) && !VxSyncBehavior.ID.isSet(behaviorBits)) return;
 
         IntSet tracked = playerTrackedBodies.computeIfAbsent(player.getUUID(), k -> IntSets.synchronize(new IntOpenHashSet()));
         if (tracked.add(body.getNetworkId())) {

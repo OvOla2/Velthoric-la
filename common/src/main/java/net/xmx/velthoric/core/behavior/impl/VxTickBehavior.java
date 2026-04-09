@@ -7,11 +7,11 @@ package net.xmx.velthoric.core.behavior.impl;
 import net.minecraft.server.level.ServerLevel;
 import net.xmx.velthoric.core.behavior.VxBehavior;
 import net.xmx.velthoric.core.behavior.VxBehaviorId;
-import net.xmx.velthoric.core.behavior.VxBehaviors;
 import net.xmx.velthoric.core.body.VxBody;
 import net.xmx.velthoric.core.body.server.VxServerBodyDataStore;
 import net.xmx.velthoric.core.body.server.VxServerBodyDataContainer;
 import net.xmx.velthoric.core.physics.world.VxPhysicsWorld;
+import net.xmx.velthoric.init.VxMainClass;
 
 /**
  * A combined behavior handling all ticking callbacks.
@@ -30,15 +30,38 @@ import net.xmx.velthoric.core.physics.world.VxPhysicsWorld;
  */
 public class VxTickBehavior implements VxBehavior {
 
-    @Override
-    public VxBehaviorId getId() {
-        return VxBehaviors.TICK;
+    /**
+     * Default constructor for the ticking behavior.
+     */
+    public VxTickBehavior() {
     }
 
+    /**
+     * The unique identifier for this behavior.
+     * Consumed by the behavior manager for bitmask allocation and dispatch.
+     */
+    public static final VxBehaviorId ID = new VxBehaviorId(VxMainClass.MODID, "Tick");
+
+    /**
+     * Retrieves the unique identifier for this behavior.
+     *
+     * @return The behavior ID.
+     */
+    @Override
+    public VxBehaviorId getId() {
+        return ID;
+    }
+
+    /**
+     * Ticks the entities on the server thread.
+     *
+     * @param level The server level.
+     * @param store The data store.
+     */
     @Override
     public void onServerTick(ServerLevel level, VxServerBodyDataStore store) {
         VxServerBodyDataContainer c = store.serverCurrent();
-        final long mask = VxBehaviors.TICK.getMask();
+        final long mask = ID.getMask();
         final VxBody[] bodies = c.bodies;
         final int capacity = c.getCapacity();
 
@@ -51,10 +74,16 @@ public class VxTickBehavior implements VxBehavior {
         }
     }
 
+    /**
+     * Called before the Jolt simulation step.
+     *
+     * @param world The physics world.
+     * @param store The data store.
+     */
     @Override
     public void onPrePhysicsTick(VxPhysicsWorld world, VxServerBodyDataStore store) {
         VxServerBodyDataContainer c = store.serverCurrent();
-        final long mask = VxBehaviors.TICK.getMask();
+        final long mask = ID.getMask();
         final VxBody[] bodies = c.bodies;
         final int capacity = c.getCapacity();
 
@@ -68,10 +97,16 @@ public class VxTickBehavior implements VxBehavior {
         }
     }
 
+    /**
+     * Called after the Jolt simulation step.
+     *
+     * @param world The physics world.
+     * @param store The data store.
+     */
     @Override
     public void onPhysicsTick(VxPhysicsWorld world, VxServerBodyDataStore store) {
         VxServerBodyDataContainer c = store.serverCurrent();
-        final long mask = VxBehaviors.TICK.getMask();
+        final long mask = ID.getMask();
         final VxBody[] bodies = c.bodies;
         final int capacity = c.getCapacity();
 
