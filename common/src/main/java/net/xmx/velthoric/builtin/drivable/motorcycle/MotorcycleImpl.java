@@ -32,7 +32,7 @@ import org.joml.Vector3f;
 
 import java.util.UUID;
 
-import static com.github.stephengold.joltjni.Jolt.degreesToRadians;
+import static com.github.stephengold.joltjni.JphMath.degreesToRadians;
 import static com.github.stephengold.joltjni.operator.Op.minus;
 
 /**
