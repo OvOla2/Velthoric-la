@@ -443,15 +443,4 @@ public class VxClientBodyManager extends VxAbstractBodyManager {
     public VxClientClock getClock() {
         return clock;
     }
-
-    /**
-     * Gets a client-side physics body handle by its UUID.
-     *
-     * @param id The UUID of the body.
-     * @return The {@link VxBody} instance, or null if not currently managed.
-     */
-    @Nullable
-    public VxBody getBody(UUID id) {
-        return managedBodies.get(id);
-    }
 }

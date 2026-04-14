@@ -53,7 +53,7 @@ public class VxF3ScreenAddition {
         long clientSoftCount = 0;
 
         for (UUID id : store.getAllPhysicsIds()) {
-            VxBody body = clientManager.getBody(id);
+            VxBody body = clientManager.getVxBody(id);
             if (body == null) continue;
 
             if (body.getType().isRigid()) {

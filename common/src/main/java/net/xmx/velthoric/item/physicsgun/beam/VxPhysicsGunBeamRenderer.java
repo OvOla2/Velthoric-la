@@ -94,7 +94,7 @@ public class VxPhysicsGunBeamRenderer {
             if (player == null) continue;
 
             Integer index = store.getIndexForId(objectUuid);
-            VxBody body = bodyManager.getBody(objectUuid);
+            VxBody body = bodyManager.getVxBody(objectUuid);
 
             if (index == null || !store.clientCurrent().render_isInitialized[index] || !body.getType().isRigid()) continue;
 

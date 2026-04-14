@@ -145,7 +145,7 @@ public class VxSyncBehavior implements VxBehavior {
                 }
 
                 UUID id = store.getIdForIndex(index);
-                VxBody body = manager.getBody(id);
+                VxBody body = manager.getVxBody(id);
                 if (body == null) {
                     it.remove();
                     continue;
@@ -182,7 +182,7 @@ public class VxSyncBehavior implements VxBehavior {
         UUID id = store.getIdForIndex(index);
         if (id == null) return;
 
-        VxBody body = manager.getBody(id);
+        VxBody body = manager.getVxBody(id);
         if (body != null) {
             try {
                 // Apply the received entries to the body's synchronized data container
