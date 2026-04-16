@@ -47,14 +47,14 @@ public record VxRawPayload(ByteBuf data, Type<VxRawPayload> identifier) implemen
     private static StreamCodec<RegistryFriendlyByteBuf, VxRawPayload> createCodec(Type<VxRawPayload> type) {
         return StreamCodec.of(
                 (buf, payload) -> {
-                    // Write the raw Netty buffer directly into the output
-                    buf.writeBytes(payload.data);
-                    // Release the buffer as ownership is transferred to the network stack
-                    payload.data.release();
+                    // Write the raw Netty buffer into the output without advancing its own readerIndex.
+                    // This is essential for broadcasting the same payload to multiple players.
+                    int readable = payload.data.readableBytes();
+                    buf.writeBytes(payload.data, payload.data.readerIndex(), readable);
                 },
                 (buf) -> {
-                    // Create a slice of the remaining readable bytes.
-                    // This does NOT copy the memory, making it extremely efficient.
+                    // Create a copy of the incoming bytes.
+                    // This ensures the payload owns its data independently.
                     int readable = buf.readableBytes();
                     return new VxRawPayload(buf.readBytes(readable), type);
                 }

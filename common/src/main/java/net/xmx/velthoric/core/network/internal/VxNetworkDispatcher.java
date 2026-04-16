@@ -30,6 +30,7 @@ import net.xmx.velthoric.util.VxChunkUtil;
 import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -88,12 +89,12 @@ public class VxNetworkDispatcher {
     /**
      * Bodies waiting to be spawned for specific players, pending chunk readiness.
      */
-    private final Map<ServerPlayer, ObjectArrayList<VxBody>> pendingSpawns = new HashMap<>();
+    private final Map<UUID, ConcurrentLinkedQueue<VxBody>> pendingSpawns = new ConcurrentHashMap<>();
 
     /**
      * Network IDs waiting to be removed from specific players' clients.
      */
-    private final Map<ServerPlayer, IntArrayList> pendingRemovals = new HashMap<>();
+    private final Map<UUID, ConcurrentLinkedQueue<Integer>> pendingRemovals = new ConcurrentHashMap<>();
 
     /**
      * Dedicated thread executor for off-loading serialization and compression from the main thread.
@@ -430,12 +431,11 @@ public class VxNetworkDispatcher {
 
         IntSet tracked = playerTrackedBodies.computeIfAbsent(player.getUUID(), k -> IntSets.synchronize(new IntOpenHashSet()));
         if (tracked.add(body.getNetworkId())) {
-            synchronized (pendingSpawns) {
-                IntArrayList removals = pendingRemovals.get(player);
-                // cancellation check: if removal is pending, cancel it instead of spawning
-                if (removals != null && removals.rem(body.getNetworkId())) return;
-                pendingSpawns.computeIfAbsent(player, k -> new ObjectArrayList<>()).add(body);
-            }
+            // Cancellation check: if removal is pending, cancel it instead of spawning
+            ConcurrentLinkedQueue<Integer> removals = pendingRemovals.get(player.getUUID());
+            if (removals != null && removals.remove(body.getNetworkId())) return;
+
+            pendingSpawns.computeIfAbsent(player.getUUID(), k -> new ConcurrentLinkedQueue<>()).add(body);
         }
     }
 
@@ -449,12 +449,11 @@ public class VxNetworkDispatcher {
     public void untrackBodyForPlayer(ServerPlayer player, int networkId) {
         IntSet tracked = playerTrackedBodies.get(player.getUUID());
         if (tracked != null && tracked.remove(networkId)) {
-            synchronized (pendingSpawns) {
-                ObjectArrayList<VxBody> spawns = pendingSpawns.get(player);
-                // cancellation check: if spawn is pending, cancel it instead of removing
-                if (spawns != null && spawns.removeIf(b -> b.getNetworkId() == networkId)) return;
-                pendingRemovals.computeIfAbsent(player, k -> new IntArrayList()).add(networkId);
-            }
+            // Cancellation check: if spawn is pending, cancel it instead of removing
+            ConcurrentLinkedQueue<VxBody> spawns = pendingSpawns.get(player.getUUID());
+            if (spawns != null && spawns.removeIf(b -> b.getNetworkId() == networkId)) return;
+
+            pendingRemovals.computeIfAbsent(player.getUUID(), k -> new ConcurrentLinkedQueue<>()).add(networkId);
         }
     }
 
@@ -464,14 +463,24 @@ public class VxNetworkDispatcher {
      */
     private void processPendingRemovals() {
         if (pendingRemovals.isEmpty()) return;
-        synchronized (pendingSpawns) {
-            var it = pendingRemovals.entrySet().iterator();
-            while (it.hasNext()) {
-                var entry = it.next();
-                if (!entry.getValue().isEmpty()) {
-                    VxNetworking.sendToPlayer(entry.getKey(), new S2CRemoveBodyBatchPacket(entry.getValue()));
+
+        for (Map.Entry<UUID, ConcurrentLinkedQueue<Integer>> entry : pendingRemovals.entrySet()) {
+            ServerPlayer player = level.getServer().getPlayerList().getPlayer(entry.getKey());
+            if (player == null) {
+                entry.getValue().clear();
+                continue;
+            }
+
+            ConcurrentLinkedQueue<Integer> ids = entry.getValue();
+            if (!ids.isEmpty()) {
+                IntArrayList toRemove = new IntArrayList();
+                Integer id;
+                while ((id = ids.poll()) != null) {
+                    toRemove.add((int) id);
                 }
-                it.remove();
+                if (!toRemove.isEmpty()) {
+                    VxNetworking.sendToPlayer(player, new S2CRemoveBodyBatchPacket(toRemove));
+                }
             }
         }
     }
@@ -483,62 +492,62 @@ public class VxNetworkDispatcher {
      */
     private void processPendingSpawns() {
         if (pendingSpawns.isEmpty()) return;
-        synchronized (pendingSpawns) {
-            Iterator<Map.Entry<ServerPlayer, ObjectArrayList<VxBody>>> it = pendingSpawns.entrySet().iterator();
-            ChunkMap chunkMap = this.level.getChunkSource().chunkMap;
 
-            // Reusable pooled buffer for spawn serialization (64KB initial size)
-            ByteBuf spawnBuf = PooledByteBufAllocator.DEFAULT.directBuffer(65536);
+        ChunkMap chunkMap = this.level.getChunkSource().chunkMap;
+        // Reusable pooled buffer for spawn serialization (64KB initial size)
+        ByteBuf spawnBuf = PooledByteBufAllocator.DEFAULT.directBuffer(65536);
 
-            try {
-                while (it.hasNext()) {
-                    Map.Entry<ServerPlayer, ObjectArrayList<VxBody>> entry = it.next();
-                    ServerPlayer player = entry.getKey();
-                    ObjectArrayList<VxBody> bodies = entry.getValue();
-                    if (bodies.isEmpty()) {
-                        it.remove();
-                        continue;
-                    }
-
-                    ObjectArrayList<VxBody> toKeep = new ObjectArrayList<>();
-                    spawnBuf.clear();
-                    int count = 0;
-
-                    for (VxBody body : bodies) {
-                        int index = body.getDataStoreIndex();
-                        if (index == -1) continue;
-
-                        VxServerBodyDataContainer c = dataStore.serverCurrent();
-                        // Retrieve the cached chunk key and convert to ChunkPos for the vanilla visibility check
-                        ChunkPos bodyChunk = new ChunkPos(c.chunkKey[index]);
-
-                        // Only spawn if the player has received the chunk (not pending send)
-                        if (chunkMap.getPlayers(bodyChunk, false).contains(player)) {
-
-                            VxSpawnData.writeRaw(spawnBuf, body, System.nanoTime());
-                            count++;
-
-                            // Check payload limit
-                            if (spawnBuf.readableBytes() > MAX_PACKET_PAYLOAD_SIZE) {
-                                dispatchSpawnPacket(player, spawnBuf, count);
-                                spawnBuf.clear();
-                                count = 0;
-                            }
-                        } else {
-                            toKeep.add(body);
-                        }
-                    }
-
-                    // Flush remaining
-                    if (count > 0) dispatchSpawnPacket(player, spawnBuf, count);
-
-                    if (toKeep.isEmpty()) it.remove();
-                    else entry.setValue(toKeep);
+        try {
+            for (Map.Entry<UUID, ConcurrentLinkedQueue<VxBody>> entry : pendingSpawns.entrySet()) {
+                ServerPlayer player = level.getServer().getPlayerList().getPlayer(entry.getKey());
+                if (player == null) {
+                    entry.getValue().clear();
+                    continue;
                 }
-            } finally {
-                // Return buffer to pool
-                spawnBuf.release();
+
+                ConcurrentLinkedQueue<VxBody> bodies = entry.getValue();
+                if (bodies.isEmpty()) continue;
+
+                int count = 0;
+                spawnBuf.clear();
+
+                // Snapshot size to avoid infinite loop if new bodies are added during processing
+                int size = bodies.size();
+                for (int i = 0; i < size; i++) {
+                    VxBody body = bodies.poll();
+                    if (body == null) break;
+
+                    int index = body.getDataStoreIndex();
+                    if (index == -1) continue;
+
+                    VxServerBodyDataContainer c = dataStore.serverCurrent();
+                    // Retrieve the cached chunk key and convert to ChunkPos for the vanilla visibility check
+                    ChunkPos bodyChunk = new ChunkPos(c.chunkKey[index]);
+
+                    // Only spawn if the player has received the chunk
+                    if (chunkMap.getPlayers(bodyChunk, false).contains(player)) {
+                        VxSpawnData.writeRaw(spawnBuf, body, System.nanoTime());
+                        count++;
+
+                        // Check payload limit
+                        if (spawnBuf.readableBytes() > MAX_PACKET_PAYLOAD_SIZE) {
+                            dispatchSpawnPacket(player, spawnBuf, count);
+                            spawnBuf.clear();
+                            count = 0;
+                        }
+                    } else {
+                        // Re-add to queue for next tick
+                        bodies.add(body);
+                    }
+                }
+
+                // Flush remaining
+                if (count > 0) {
+                    dispatchSpawnPacket(player, spawnBuf, count);
+                }
             }
+        } finally {
+            spawnBuf.release();
         }
     }
 
@@ -592,11 +601,10 @@ public class VxNetworkDispatcher {
      * @param player The player who disconnected.
      */
     public void onPlayerDisconnect(ServerPlayer player) {
-        playerTrackedBodies.remove(player.getUUID());
-        synchronized (pendingSpawns) {
-            pendingSpawns.remove(player);
-            pendingRemovals.remove(player);
-        }
+        UUID uuid = player.getUUID();
+        playerTrackedBodies.remove(uuid);
+        pendingSpawns.remove(uuid);
+        pendingRemovals.remove(uuid);
     }
 
     /**
