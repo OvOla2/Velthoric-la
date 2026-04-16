@@ -30,7 +30,7 @@ public class S2CUpdateVerticesBatchPacket implements IVxNetPacket {
     private final ByteBuf data;
 
     /**
-     * @param data Pre-compressed vertex data stream (Direct ByteBuf).
+     * @param data Pre-compressed vertex data stream (Direct ByteBuf). Must be released via {@link #release()}.
      */
     public S2CUpdateVerticesBatchPacket(ByteBuf data) {
         this.data = data;
@@ -49,12 +49,10 @@ public class S2CUpdateVerticesBatchPacket implements IVxNetPacket {
      */
     @Override
     public void encode(VxByteBuf buf) {
-        try {
-            buf.writeVarInt(this.data.readableBytes());
-            buf.writeBytes(this.data);
-        } finally {
-            this.data.release();
-        }
+        // Reset index so multiple encode calls (broadcasting) send the same data
+        this.data.readerIndex(0);
+        buf.writeVarInt(this.data.readableBytes());
+        buf.writeBytes(this.data);
     }
 
     /**
@@ -68,6 +66,10 @@ public class S2CUpdateVerticesBatchPacket implements IVxNetPacket {
 
                 ByteBuffer compressedNio = this.data.nioBuffer();
                 long uncompressedSize = Zstd.decompressedSize(compressedNio);
+
+                if (Zstd.isError(uncompressedSize)) {
+                    return;
+                }
 
                 ByteBuffer targetBuf = DECOMPRESSION_BUFFER.get();
                 if (targetBuf.capacity() < uncompressedSize) {
@@ -102,8 +104,18 @@ public class S2CUpdateVerticesBatchPacket implements IVxNetPacket {
                     }
                 }
             } finally {
-                this.data.release();
+                this.release();
             }
         });
+    }
+
+    /**
+     * Releases the compressed payload buffer.
+     */
+    @Override
+    public void release() {
+        if (this.data.refCnt() > 0) {
+            this.data.release();
+        }
     }
 }

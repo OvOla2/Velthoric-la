@@ -312,6 +312,9 @@ public class VxNetworkDispatcher {
                     VxNetworking.sendToPlayer(player, task.packet);
                 }
             }
+            // Always release the pooled buffer after processing the task, 
+            // even if no players were watching the chunk.
+            task.packet.release();
         }
     }
 
@@ -568,7 +571,11 @@ public class VxNetworkDispatcher {
             compressed.writerIndex((int) len);
 
             // The packet takes ownership of the 'compressed' buffer (should release it after write)
-            VxNetworking.sendToPlayer(player, new S2CSpawnBodyBatchPacket(count, compressed));
+            IVxNetPacket packet = new S2CSpawnBodyBatchPacket(count, compressed);
+            VxNetworking.sendToPlayer(player, packet);
+
+            // Release the pooled buffer
+            packet.release();
 
         } catch (Exception e) {
             // Release the buffer if an exception prevented packet creation/sending
