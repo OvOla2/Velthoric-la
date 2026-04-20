@@ -11,6 +11,7 @@ import net.minecraft.network.chat.Component;
 import net.xmx.velthoric.command.argument.VxBodyArgument;
 import net.xmx.velthoric.core.body.VxBody;
 import net.xmx.velthoric.core.body.VxRemovalReason;
+import net.xmx.velthoric.core.behavior.impl.VxNoKillBehavior;
 
 import java.util.List;
 
@@ -27,13 +28,19 @@ public class VxKillCommand {
                 .then(Commands.argument("selector", VxBodyArgument.instance())
                         .executes(context -> {
                             List<VxBody> bodiesToRemove = VxBodyArgument.getBodies(context, "selector");
+                            int removedCount = 0;
 
                             for (VxBody body : bodiesToRemove) {
+                                if (body.getPhysicsWorld().getBodyManager().getBehaviorManager().hasBehavior(body, VxNoKillBehavior.ID)) {
+                                    continue;
+                                }
                                 body.getPhysicsWorld().getBodyManager().removeBody(body.getPhysicsId(), VxRemovalReason.DISCARD);
+                                removedCount++;
                             }
 
-                            context.getSource().sendSuccess(() -> Component.literal("Removed " + bodiesToRemove.size() + " physics bodies."), true);
-                            return bodiesToRemove.size();
+                            int finalRemovedCount = removedCount;
+                            context.getSource().sendSuccess(() -> Component.literal("Removed " + finalRemovedCount + " physics bodies."), true);
+                            return removedCount;
                         })
                 )
         );
