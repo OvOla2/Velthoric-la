@@ -48,7 +48,7 @@ public class VxVehicleHudRenderer {
             UUID physicsId = mountingEntity.getPhysicsId().get();
 
             // Retrieve the actual Physics Body from the Client Manager
-            VxBody body = VxClientBodyManager.getInstance().getBody(physicsId);
+            VxBody body = VxClientBodyManager.getInstance().getVxBody(physicsId);
 
             // Check if the body is a Vehicle
             if (body instanceof VxWheeledVehicle vxVehicle) {

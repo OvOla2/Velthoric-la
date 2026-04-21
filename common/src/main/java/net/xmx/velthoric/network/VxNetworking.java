@@ -197,10 +197,12 @@ public class VxNetworking {
      */
     public static void sendToServer(IVxNetPacket packet) {
         ByteBuf buf = createBuffer(packet);
-        if (NetworkManager.canServerReceive(VxRawPayload.TYPE_C2S)) {
-            NetworkManager.sendToServer(new VxRawPayload(buf, VxRawPayload.TYPE_C2S));
-        } else {
-            // Prevent memory leaks if the packet cannot be sent
+        try {
+            if (NetworkManager.canServerReceive(VxRawPayload.TYPE_C2S)) {
+                NetworkManager.sendToServer(new VxRawPayload(buf, VxRawPayload.TYPE_C2S));
+            }
+        } finally {
+            // Release the buffer as it has been serialized into the outgoing network stream
             buf.release();
         }
     }
@@ -213,9 +215,12 @@ public class VxNetworking {
      */
     public static void sendToPlayer(ServerPlayer player, IVxNetPacket packet) {
         ByteBuf buf = createBuffer(packet);
-        if (NetworkManager.canPlayerReceive(player, VxRawPayload.TYPE_S2C)) {
-            NetworkManager.sendToPlayer(player, new VxRawPayload(buf, VxRawPayload.TYPE_S2C));
-        } else {
+        try {
+            if (NetworkManager.canPlayerReceive(player, VxRawPayload.TYPE_S2C)) {
+                NetworkManager.sendToPlayer(player, new VxRawPayload(buf, VxRawPayload.TYPE_S2C));
+            }
+        } finally {
+            // Release the buffer as it has been serialized into the outgoing network stream
             buf.release();
         }
     }
@@ -229,12 +234,14 @@ public class VxNetworking {
         if (GameInstance.getServer() == null) return;
 
         ByteBuf buf = createBuffer(packet);
-        // Note: Architectury's sendToPlayers usually handles retained duplicates internally,
-        // but since we wrap a raw buffer in a record, the record creation is cheap.
-        NetworkManager.sendToPlayers(
-                GameInstance.getServer().getPlayerList().getPlayers(),
-                new VxRawPayload(buf, VxRawPayload.TYPE_S2C)
-        );
+        try {
+            NetworkManager.sendToPlayers(
+                    GameInstance.getServer().getPlayerList().getPlayers(),
+                    new VxRawPayload(buf, VxRawPayload.TYPE_S2C)
+            );
+        } finally {
+            buf.release();
+        }
     }
 
     /**
@@ -249,7 +256,11 @@ public class VxNetworking {
         ServerLevel level = GameInstance.getServer().getLevel(dimension);
         if (level != null) {
             ByteBuf buf = createBuffer(packet);
-            NetworkManager.sendToPlayers(level.players(), new VxRawPayload(buf, VxRawPayload.TYPE_S2C));
+            try {
+                NetworkManager.sendToPlayers(level.players(), new VxRawPayload(buf, VxRawPayload.TYPE_S2C));
+            } finally {
+                buf.release();
+            }
         }
     }
 }

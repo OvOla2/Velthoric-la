@@ -44,7 +44,7 @@ public class S2CUpdateBodyStateBatchPacket implements IVxNetPacket {
 
     /**
      * Server-side constructor wrapping a pre-built compressed payload.
-     * Takes ownership of the passed ByteBuf (it will be released after encoding).
+     * Takes ownership of the passed ByteBuf (it must be released via {@link #release()}).
      *
      * @param data The compressed Zstd data blob.
      */
@@ -61,14 +61,11 @@ public class S2CUpdateBodyStateBatchPacket implements IVxNetPacket {
      */
     @Override
     public void encode(VxByteBuf buf) {
-        try {
-            int length = this.data.readableBytes();
-            buf.writeVarInt(length);
-            buf.writeBytes(this.data);
-        } finally {
-            // Important: Release the pooled buffer after writing to the wire.
-            this.data.release();
-        }
+        // Reset index so multiple encode calls (broadcasting) send the same data
+        this.data.readerIndex(0);
+        int length = this.data.readableBytes();
+        buf.writeVarInt(length);
+        buf.writeBytes(this.data);
     }
 
     /**
@@ -105,6 +102,11 @@ public class S2CUpdateBodyStateBatchPacket implements IVxNetPacket {
 
                 // Determine required size for the output buffer
                 long uncompressedSize = Zstd.decompressedSize(compressedNio);
+
+                if (Zstd.isError(uncompressedSize)) {
+                    // Corruption or empty payload due to broadcast issue
+                    return;
+                }
 
                 // Acquire and resize thread-local buffer if necessary
                 ByteBuffer targetBuf = DECOMPRESSION_BUFFER.get();
@@ -206,8 +208,18 @@ public class S2CUpdateBodyStateBatchPacket implements IVxNetPacket {
 
             } finally {
                 // Always release the pooled network buffer on client side
-                this.data.release();
+                this.release();
             }
         });
+    }
+
+    /**
+     * Releases the compressed payload buffer.
+     */
+    @Override
+    public void release() {
+        if (this.data.refCnt() > 0) {
+            this.data.release();
+        }
     }
 }

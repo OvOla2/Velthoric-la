@@ -30,4 +30,13 @@ public interface IVxNetPacket {
      * @param context The network context (player, environment, etc.).
      */
     void handle(NetworkManager.PacketContext context);
+
+    /**
+     * Releases any pooled resources associated with this packet.
+     * <p>
+     * For packets using Netty's pooled ByteBufs, this must be called to return
+     * the memory back to the pool once the packet is no longer needed.
+     * </p>
+     */
+    default void release() {}
 }

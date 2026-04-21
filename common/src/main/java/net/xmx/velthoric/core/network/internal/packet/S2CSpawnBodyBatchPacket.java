@@ -39,7 +39,7 @@ public class S2CSpawnBodyBatchPacket implements IVxNetPacket {
 
     /**
      * @param count Number of bodies.
-     * @param data  Compressed Zstd blob (ByteBuf).
+     * @param data  Compressed Zstd blob (ByteBuf). Must be released via {@link #release()}.
      */
     public S2CSpawnBodyBatchPacket(int count, ByteBuf data) {
         this.count = count;
@@ -51,13 +51,11 @@ public class S2CSpawnBodyBatchPacket implements IVxNetPacket {
      */
     @Override
     public void encode(VxByteBuf buf) {
-        try {
-            buf.writeVarInt(this.count);
-            buf.writeVarInt(this.data.readableBytes());
-            buf.writeBytes(this.data);
-        } finally {
-            this.data.release();
-        }
+        // Reset index so multiple encode calls (broadcasting) send the same data
+        this.data.readerIndex(0);
+        buf.writeVarInt(this.count);
+        buf.writeVarInt(this.data.readableBytes());
+        buf.writeBytes(this.data);
     }
 
     /**
@@ -80,6 +78,10 @@ public class S2CSpawnBodyBatchPacket implements IVxNetPacket {
 
                 ByteBuffer compressedNio = this.data.nioBuffer();
                 long uncompressedSize = Zstd.decompressedSize(compressedNio);
+
+                if (Zstd.isError(uncompressedSize)) {
+                    return;
+                }
 
                 ByteBuffer targetBuf = DECOMPRESSION_BUFFER.get();
                 if (targetBuf.capacity() < uncompressedSize) {
@@ -104,8 +106,18 @@ public class S2CSpawnBodyBatchPacket implements IVxNetPacket {
                 }
 
             } finally {
-                this.data.release();
+                this.release();
             }
         });
+    }
+
+    /**
+     * Releases the compressed payload buffer.
+     */
+    @Override
+    public void release() {
+        if (this.data.refCnt() > 0) {
+            this.data.release();
+        }
     }
 }

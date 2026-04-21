@@ -84,6 +84,10 @@ public final class VxBehaviorManager {
             registerBehavior(new VxMountBehavior());
         }
 
+        if (getBehavior(VxNoKillBehavior.ID) == null) {
+            registerBehavior(new VxNoKillBehavior());
+        }
+
         // Use consolidated sync behavior for both sides
         if (getBehavior(VxSyncBehavior.ID) == null) {
             registerBehavior(new VxSyncBehavior());
