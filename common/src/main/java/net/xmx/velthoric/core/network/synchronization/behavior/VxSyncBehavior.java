@@ -29,7 +29,6 @@ import net.xmx.velthoric.network.VxNetworking;
 
 import java.util.Iterator;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -265,26 +264,20 @@ public class VxSyncBehavior implements VxBehavior {
                 serializationBuffer.readBytes(payload);
 
                 int netId = body.getNetworkId();
-                Set<ServerPlayer> trackers = dispatcher.getTrackersForBody(netId);
-                
-                if (trackers != null && !trackers.isEmpty()) {
-                    for (ServerPlayer player : trackers) {
-                        playerUpdateMap.computeIfAbsent(player, p -> new Object2ObjectArrayMap<>())
-                                .put(netId, payload);
-                    }
-                }
+                dispatcher.forEachTrackerForBody(netId, player ->
+                    playerUpdateMap.computeIfAbsent(player, p -> new Object2ObjectArrayMap<>())
+                            .put(netId, payload)
+                );
             }
         }
 
-        // 3. Dispatch batch packets to players on the server thread
+        // 3. Dispatch batch packets to players directly from the network thread.
         if (!playerUpdateMap.isEmpty()) {
-            bodyManager.getPhysicsWorld().getLevel().getServer().execute(() -> 
-                playerUpdateMap.forEach((player, data) -> {
-                    if (!data.isEmpty()) {
-                        VxNetworking.sendToPlayer(player, new S2CSynchronizedDataBatchPacket(data));
-                    }
-                })
-            );
+            playerUpdateMap.forEach((player, data) -> {
+                if (!data.isEmpty()) {
+                    VxNetworking.sendToPlayer(player, new S2CSynchronizedDataBatchPacket(data));
+                }
+            });
         }
     }
 }
