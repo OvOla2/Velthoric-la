@@ -26,6 +26,9 @@ import java.nio.ByteBuffer;
  * and then applied directly to the Structure-of-Arrays data store.
  * <p>
  * This eliminates the creation of thousands of temporary objects (float[], Packet objects, wrappers) per tick.
+ * <p>
+ * <b>Adaptive Delay:</b> The packet handler feeds arrival timestamps to the interpolator
+ * to enable dynamic delay calculation based on actual network conditions.
  *
  * @author xI-Mx-Ix
  */
@@ -86,6 +89,9 @@ public class S2CUpdateBodyStateBatchPacket implements IVxNetPacket {
     /**
      * Processes the decoded packet on the client's main thread and updates the data store.
      * Uses Zero-Copy decompression directly into the DataStore arrays.
+     * <p>
+     * Additionally feeds the packet arrival timestamp to the interpolator's
+     * adaptive delay system for dynamic delay calculation.
      *
      * @param context The packet context.
      */
@@ -139,7 +145,12 @@ public class S2CUpdateBodyStateBatchPacket implements IVxNetPacket {
                 double baseY = context.getPlayer().level().getMinBuildHeight();
                 double baseZ = cp.getMinBlockZ();
 
-                manager.addClockSyncSample(timestamp - manager.getClock().getGameTimeNanos());
+                // Feed clock sync sample
+                long clientNow = manager.getClock().getGameTimeNanos();
+                manager.addClockSyncSample(timestamp - clientNow);
+
+                // Feed adaptive delay system with packet arrival time
+                manager.getInterpolator().onPacketReceived(clientNow);
 
                 // 4. Update Data Store (Zero Object Allocation)
                 VxClientBodyDataContainer c = store.clientCurrent();

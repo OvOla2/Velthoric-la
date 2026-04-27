@@ -40,6 +40,10 @@ import java.util.UUID;
  *     <li>Triggering the interpolation of body states for smooth rendering.</li>
  *     <li>Handling the spawning and removal of bodies via {@link VxBody} handles.</li>
  * </ul>
+ * <p>
+ * <b>Adaptive Delay System:</b> The manager works with the interpolator to dynamically
+ * compute the minimum delay needed for smooth rendering based on actual network conditions.
+ * This minimizes perceived latency.
  *
  * @author xI-Mx-Ix
  */
@@ -56,25 +60,19 @@ public class VxClientBodyManager extends VxAbstractBodyManager {
     private final VxClientClock clock = new VxClientClock();
 
     /**
-     * The delay applied to rendering to allow for interpolation. A larger value
-     * can smooth over more network jitter but increases perceived latency.
-     * Value is in nanoseconds (150ms).
-     */
-    private final long interpolationDelayNanos = 150_000_000L;
-
-    /**
      * The data store holding all body states in a Structure of Arrays format.
      */
     private final VxClientBodyDataStore store = new VxClientBodyDataStore();
 
     /**
      * The interpolator responsible for calculating smooth body transforms based on history buffers.
+     * Also manages the adaptive delay calculation.
      */
     private final VxClientBodyInterpolator interpolator = new VxClientBodyInterpolator();
 
     /**
      * The calculated time offset between the client and server clocks.
-     * Client Render Time = Client Game Time + Offset - Interpolation Delay.
+     * Client Render Time = Client Game Time + Offset - Adaptive Delay.
      */
     private long clockOffsetNanos = 0L;
 
@@ -152,12 +150,14 @@ public class VxClientBodyManager extends VxAbstractBodyManager {
 
     /**
      * Synchronizes the client clock with the server clock using collected samples.
-     * It uses a trimmed mean to discard outliers caused by network spikes (jitter).
+     * Uses a trimmed mean to discard outliers caused by network spikes (jitter).
+     * Requires 8 samples for a stable average and applies a 20% weight for new values
+     * to enable fast convergence while still filtering outliers.
      */
     private void synchronizeClock() {
         synchronized (clockOffsetSamples) {
             // Wait for a sufficient number of samples before calculating to ensure stability.
-            if (clockOffsetSamples.size() < 20) {
+            if (clockOffsetSamples.size() < 8) {
                 return;
             }
 
@@ -180,13 +180,13 @@ public class VxClientBodyManager extends VxAbstractBodyManager {
             long averageOffset = sum / trimmedSamples.size();
             clockOffsetSamples.clear();
 
-            // Smoothly adjust the clock offset to the new average to prevents visible snapping.
+            // Apply clock offset with faster convergence
             if (!isClockOffsetInitialized) {
                 this.clockOffsetNanos = averageOffset;
                 this.isClockOffsetInitialized = true;
             } else {
-                // Apply a low-pass filter (5% weight to new value)
-                this.clockOffsetNanos = (long) (this.clockOffsetNanos * 0.95 + averageOffset * 0.05);
+                // Use 20% weight for new value (was 5%) — converges 4x faster
+                this.clockOffsetNanos = (long) (this.clockOffsetNanos * 0.80 + averageOffset * 0.20);
             }
         }
     }
@@ -373,6 +373,7 @@ public class VxClientBodyManager extends VxAbstractBodyManager {
             clockOffsetSamples.clear();
         }
         this.clock.reset();
+        this.interpolator.reset();
     }
 
     /**
@@ -380,6 +381,9 @@ public class VxClientBodyManager extends VxAbstractBodyManager {
      * <p>
      * This handles interpolation, clock synchronization, sending C2S custom data updates,
      * and triggering body specific logic via {@link VxBody#onClientTick()}.
+     * <p>
+     * The render timestamp is computed using a dynamically calculated delay from the
+     * interpolator, which adapts to actual network conditions.
      *
      * @param isPaused True if the client game is currently paused.
      */
@@ -408,9 +412,10 @@ public class VxClientBodyManager extends VxAbstractBodyManager {
         synchronizeClock();
 
         if (isClockOffsetInitialized) {
-            // Calculate the target render time based on the synced clock.
-            // Formula: GameTime + ClockOffset - InterpolationDelay
-            long renderTimestamp = this.clock.getGameTimeNanos() + this.clockOffsetNanos - this.interpolationDelayNanos;
+            // Calculate the target render time using the adaptive delay from the interpolator.
+            // Formula: GameTime + ClockOffset - AdaptiveDelay
+            long adaptiveDelay = interpolator.getAdaptiveDelayNanos();
+            long renderTimestamp = this.clock.getGameTimeNanos() + this.clockOffsetNanos - adaptiveDelay;
 
             // Perform interpolation for all bodies in the store
             interpolator.updateInterpolationTargets(store, renderTimestamp);
