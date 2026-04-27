@@ -18,6 +18,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.phys.Vec3;
 import net.xmx.velthoric.builtin.VxRegisteredBodies;
+import net.xmx.velthoric.builtin.box.BoxColor;
 import net.xmx.velthoric.builtin.box.BoxRigidBody;
 import net.xmx.velthoric.core.body.server.VxServerBodyManager;
 import net.xmx.velthoric.math.VxTransform;
@@ -169,7 +170,10 @@ public final class SpawnJengaTest implements IVxTestCommand {
                 BoxRigidBody body = manager.createRigidBody(
                         VxRegisteredBodies.BOX,
                         transform,
-                        box -> box.setHalfExtents(halfExtents)
+                        box -> {
+                            box.setHalfExtents(halfExtents);
+                            box.setColor(BoxColor.getRandom());
+                        }
                 );
 
                 if (body != null) {
