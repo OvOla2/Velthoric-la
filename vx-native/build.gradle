@@ -19,15 +19,15 @@ dependencies {
     // We use 'api' here so that projects depending on vx-native (like common)
     // can access the Zstd and Jolt Java classes.
     api "com.github.luben:zstd-jni:1.5.7-6"
-    api "com.github.stephengold:jolt-jni-Linux64:${project.jolt_jni_version}"
+    api "vx-jolt-jni:jolt-jni:${project.jolt_jni_version}@jar"
 
     // These are the dependencies we only download to extract the .dll and .so files.
     nativeExtraction "com.github.luben:zstd-jni:1.5.7-6"
-    nativeExtraction "com.github.stephengold:jolt-jni-Windows64:${project.jolt_jni_version}:ReleaseDp"
-    nativeExtraction "com.github.stephengold:jolt-jni-Linux64:${project.jolt_jni_version}:ReleaseDp"
-    nativeExtraction "com.github.stephengold:jolt-jni-Linux_ARM64:${project.jolt_jni_version}:ReleaseDp"
-    nativeExtraction "com.github.stephengold:jolt-jni-MacOSX64:${project.jolt_jni_version}:ReleaseDp"
-    nativeExtraction "com.github.stephengold:jolt-jni-MacOSX_ARM64:${project.jolt_jni_version}:ReleaseDp"
+    nativeExtraction "vx-jolt-jni:joltjni:${project.jolt_jni_version}:windows-x64-ReleaseDp@dll"
+    nativeExtraction "vx-jolt-jni:joltjni:${project.jolt_jni_version}:linux-x64-ReleaseDp@so"
+    nativeExtraction "vx-jolt-jni:joltjni:${project.jolt_jni_version}:linux-arm64-ReleaseDp@so"
+    nativeExtraction "vx-jolt-jni:joltjni:${project.jolt_jni_version}:macos-x64-ReleaseDp@dylib"
+    nativeExtraction "vx-jolt-jni:joltjni:${project.jolt_jni_version}:macos-arm64-ReleaseDp@dylib"
 
     // Use Fabric @Environment only; do not use other Fabric Loader classes.
     modImplementation "net.fabricmc:fabric-loader:$rootProject.fabric_loader_version"
@@ -68,53 +68,48 @@ processResources {
         includeEmptyDirs = false
     }
 
-    // Extract Jolt natives for Windows.
-    def win64 = findJar('jolt-jni-Windows64')
+    // Include Jolt natives for Windows.
+    def win64 = findJar("joltjni-${project.jolt_jni_version}-windows-x64-ReleaseDp")
     if (win64) {
-        from(zipTree(win64)) {
-            include 'windows/x86-64/com/github/stephengold/joltjni.dll'
-            eachFile { fcd -> fcd.path = "natives/win/x86_64/joltjni.dll" }
-            includeEmptyDirs = false
+        from(win64) {
+            into "natives/win/x86_64"
+            rename { "joltjni.dll" }
         }
     }
 
-    // Extract Jolt natives for Linux x64.
-    def linux64 = findJar('jolt-jni-Linux64')
+    // Include Jolt natives for Linux x64.
+    def linux64 = findJar("joltjni-${project.jolt_jni_version}-linux-x64-ReleaseDp")
     if (linux64) {
-        from(zipTree(linux64)) {
-            include 'linux/x86-64/com/github/stephengold/libjoltjni.so'
-            eachFile { fcd -> fcd.path = "natives/linux/x86_64/libjoltjni.so" }
-            includeEmptyDirs = false
+        from(linux64) {
+            into "natives/linux/x86_64"
+            rename { "libjoltjni.so" }
         }
     }
 
-    // Extract Jolt natives for Linux ARM64.
-    def linuxArm = findJar('jolt-jni-Linux_ARM64')
+    // Include Jolt natives for Linux ARM64.
+    def linuxArm = findJar("joltjni-${project.jolt_jni_version}-linux-arm64-ReleaseDp")
     if (linuxArm) {
-        from(zipTree(linuxArm)) {
-            include 'linux/aarch64/com/github/stephengold/libjoltjni.so'
-            eachFile { fcd -> fcd.path = "natives/linux/aarch64/libjoltjni.so" }
-            includeEmptyDirs = false
+        from(linuxArm) {
+            into "natives/linux/aarch64"
+            rename { "libjoltjni.so" }
         }
     }
 
-    // Extract Jolt natives for macOS x64.
-    def mac64 = findJar('jolt-jni-MacOSX64')
+    // Include Jolt natives for macOS x64.
+    def mac64 = findJar("joltjni-${project.jolt_jni_version}-macos-x64-ReleaseDp")
     if (mac64) {
-        from(zipTree(mac64)) {
-            include 'osx/x86-64/com/github/stephengold/libjoltjni.dylib'
-            eachFile { fcd -> fcd.path = "natives/osx/x86_64/libjoltjni.dylib" }
-            includeEmptyDirs = false
+        from(mac64) {
+            into "natives/osx/x86_64"
+            rename { "libjoltjni.dylib" }
         }
     }
 
-    // Extract Jolt natives for macOS ARM64.
-    def macArm = findJar('jolt-jni-MacOSX_ARM64')
+    // Include Jolt natives for macOS ARM64.
+    def macArm = findJar("joltjni-${project.jolt_jni_version}-macos-arm64-ReleaseDp")
     if (macArm) {
-        from(zipTree(macArm)) {
-            include 'osx/aarch64/com/github/stephengold/libjoltjni.dylib'
-            eachFile { fcd -> fcd.path = "natives/osx/aarch64/libjoltjni.dylib" }
-            includeEmptyDirs = false
+        from(macArm) {
+            into "natives/osx/aarch64"
+            rename { "libjoltjni.dylib" }
         }
     }
 
