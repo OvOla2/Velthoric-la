@@ -4,14 +4,88 @@ on:
   push:
     branches:
       - master
+  workflow_dispatch:
 
 jobs:
-  build:
+  # Job 1: Build native libraries for all supported platforms
+  build-natives:
+    name: Build Native (${{ matrix.target_os }} - ${{ matrix.target_arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            target_os: win
+            target_arch: x86_64
+            ext: dll
+          - os: ubuntu-22.04
+            target_os: linux
+            target_arch: x86_64
+            ext: so
+          - os: ubuntu-22.04
+            target_os: linux
+            target_arch: aarch64
+            ext: so
+          - os: macos-14
+            target_os: osx
+            target_arch: x86_64
+            ext: dylib
+          - os: macos-14
+            target_os: osx
+            target_arch: aarch64
+            ext: dylib
+    runs-on: ${{ matrix.os }}
+    steps:
+      # Step 1: Download the source code
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Java 21 for Gradle
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      # Step 3: Install Cross-Compiler for Linux ARM64 if needed
+      - name: Install Cross-Compiler (Linux ARM64)
+        if: matrix.target_os == 'linux' && matrix.target_arch == 'aarch64'
+        run: |
+          sudo apt-get update
+          sudo apt install -y g++-aarch64-linux-gnu
+
+      # Step 4: Ensure the Gradle wrapper is executable
+      - name: Grant Execute Permissions
+        run: chmod +x gradlew
+
+      # Step 5: Build the native C++ library for the current matrix target
+      - name: Build Native
+        run: ./gradlew :vx-native:cmakeBuild -PtargetArch=${{ matrix.target_arch }}
+        shell: bash
+
+      # Step 6: Move the binary to a structured directory for later assembly
+      - name: Prepare Artifact
+        run: |
+          mkdir -p dist/natives/${{ matrix.target_os }}/${{ matrix.target_arch }}
+          # Find the library (handles Release/ subfolder in MSVC)
+          find vx-native/src/main/cpp/build -name "*.${{ matrix.ext }}" -exec cp {} dist/natives/${{ matrix.target_os }}/${{ matrix.target_arch }}/vxnative.${{ matrix.ext }} \;
+        shell: bash
+
+      # Step 7: Upload the binary as an Actions artifact (persists for 1 day)
+      - name: Upload Native
+        uses: actions/upload-artifact@v4
+        with:
+          name: vxnative-${{ matrix.target_os }}-${{ matrix.target_arch }}
+          path: dist/*
+          retention-days: 1
+
+  # Job 2: Assemble the final Mod JARs including all native binaries
+  build-mod:
     name: Compile and Release
+    needs: build-natives
     runs-on: ubuntu-latest
     permissions:
       contents: write # Required to update the release tag and upload files
-
     steps:
       # Step 1: Download the source code
       - name: Checkout Repository
@@ -25,15 +99,22 @@ jobs:
           distribution: 'temurin'
           cache: 'gradle'
 
-      # Step 3: Ensure the Gradle wrapper is executable
+      # Step 3: Download all native binaries built in the previous job
+      - name: Download Native Binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: vx-native/prebuilt-natives
+          merge-multiple: true
+
+      # Step 4: Ensure the Gradle wrapper is executable
       - name: Grant Execute Permissions
         run: chmod +x gradlew
 
-      # Step 4: Run the build process
+      # Step 5: Run the main build process, skipping native compilation since we already have the binaries
       - name: Build with Gradle
-        run: ./gradlew build
+        run: ./gradlew build -x :vx-native:cmakeBuild
 
-      # Step 5: Upload internal artifacts (stored in the Actions tab for 7 days)
+      # Step 6: Upload internal artifacts (stored in the Actions tab for 7 days)
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -43,7 +124,7 @@ jobs:
             neoforge/build/libs/*.jar
           retention-days: 7
 
-      # Step 6: Create or update the public "nightly" pre-release
+      # Step 7: Create or update the public "nightly" pre-release
       # This will overwrite the files under the "nightly" tag on every push
       - name: Update Nightly Pre-Release
         uses: marvinpinto/action-automatic-releases@latest

@@ -139,6 +139,14 @@ processResources {
         includeEmptyDirs = false
     }
 
+    // Include pre-built natives from 'prebuilt-natives' (used by CI to assemble multi-platform JARs)
+    def prebuiltDir = file("prebuilt-natives")
+    if (prebuiltDir.exists()) {
+        from(prebuiltDir) {
+            include "**/*.dll", "**/*.so", "**/*.dylib"
+        }
+    }
+
     // If a file is found in multiple zips, we just warn instead of failing.
     duplicatesStrategy = DuplicatesStrategy.WARN
 }
@@ -146,7 +154,10 @@ processResources {
 // Native Build Tasks
 tasks.register('cmakeConfigure', Exec) {
     workingDir 'src/main/cpp'
-    // Ensure the build directory exists
+    
+    def targetArch = project.hasProperty('targetArch') ? project.targetArch : System.getProperty("os.arch")
+    def archName = (targetArch == "amd64" || targetArch == "x86_64") ? "x64" : "arm64"
+
     doFirst {
         file('src/main/cpp/build').mkdirs()
     }
@@ -154,7 +165,20 @@ tasks.register('cmakeConfigure', Exec) {
     if (Os.isFamily(Os.FAMILY_WINDOWS)) {
         commandLine 'cmake', '-S', '.', '-B', 'build', '-G', 'Visual Studio 17 2022', '-A', 'x64', "-DJOLT_JNI_VERSION=${project.jolt_jni_version}"
     } else {
-        commandLine 'cmake', '-S', '.', '-B', 'build', '-DCMAKE_BUILD_TYPE=Release', "-DJOLT_JNI_VERSION=${project.jolt_jni_version}"
+        def args = ['cmake', '-S', '.', '-B', 'build', '-DCMAKE_BUILD_TYPE=Release', "-DJOLT_JNI_VERSION=${project.jolt_jni_version}"]
+        
+        // Handle Linux ARM64 cross-compilation on CI
+        if (Os.isFamily(Os.FAMILY_UNIX) && !Os.isFamily(Os.FAMILY_MAC) && targetArch == "aarch64") {
+            args << "-DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++"
+            args << "-DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc"
+        }
+        
+        // Handle MacOS cross-compilation (Universal binaries or specific arch)
+        if (Os.isFamily(Os.FAMILY_MAC)) {
+            args << "-DCMAKE_OSX_ARCHITECTURES=${archName == 'x64' ? 'x86_64' : 'arm64'}"
+        }
+
+        commandLine args
     }
 }
 
