@@ -25,6 +25,7 @@ jobs:
           - os: ubuntu-22.04
             target_os: linux
             target_arch: aarch64
+            cross_compile: true
             ext: so
           - os: macos-14
             target_os: osx
@@ -46,13 +47,14 @@ jobs:
         with:
           java-version: '21'
           distribution: 'temurin'
+          cache: 'gradle'
 
-      # Step 3: Install Cross-Compiler for Linux ARM64 if needed
-      - name: Install Cross-Compiler (Linux ARM64)
-        if: matrix.target_os == 'linux' && matrix.target_arch == 'aarch64'
+      # Step 3: Install aarch64 cross-compiler (Linux cross-compile only)
+      - name: Install Cross-Compiler
+        if: matrix.cross_compile
         run: |
           sudo apt-get update
-          sudo apt install -y g++-aarch64-linux-gnu
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
       # Step 4: Ensure the Gradle wrapper is executable
       - name: Grant Execute Permissions
@@ -60,7 +62,7 @@ jobs:
 
       # Step 5: Build the native C++ library for the current matrix target
       - name: Build Native
-        run: ./gradlew :vx-native:cmakeBuild -PtargetArch=${{ matrix.target_arch }}
+        run: ./gradlew :vx-native:cmakeBuild -PtargetArch=${{ matrix.target_arch }} -PnativeOnly=true
         shell: bash
 
       # Step 6: Move the binary to a structured directory for later assembly

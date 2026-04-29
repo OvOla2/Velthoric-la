@@ -118,8 +118,8 @@ processResources {
     def buildDir = file("src/main/cpp/build")
     def osName = Os.isFamily(Os.FAMILY_WINDOWS) ? "win" : (Os.isFamily(Os.FAMILY_MAC) ? "osx" : "linux")
     
-    // Architecture detection
-    def currentArch = System.getProperty("os.arch")
+    // Architecture detection: prioritize targetArch if set (for cross-builds), otherwise use system arch
+    def currentArch = project.hasProperty('targetArch') ? project.targetArch : System.getProperty("os.arch")
     def archFolder = (currentArch == "amd64" || currentArch == "x86_64") ? "x86_64" : "aarch64"
 
     // Include the built vxnative library
@@ -167,15 +167,17 @@ tasks.register('cmakeConfigure', Exec) {
     } else {
         def args = ['cmake', '-S', '.', '-B', 'build', '-DCMAKE_BUILD_TYPE=Release', "-DJOLT_JNI_VERSION=${project.jolt_jni_version}"]
         
-        // Handle Linux ARM64 cross-compilation on CI
-        if (Os.isFamily(Os.FAMILY_UNIX) && !Os.isFamily(Os.FAMILY_MAC) && targetArch == "aarch64") {
-            args << "-DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++"
-            args << "-DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc"
-        }
-        
         // Handle MacOS cross-compilation (Universal binaries or specific arch)
         if (Os.isFamily(Os.FAMILY_MAC)) {
             args << "-DCMAKE_OSX_ARCHITECTURES=${archName == 'x64' ? 'x86_64' : 'arm64'}"
+        }
+
+        // Handle Linux cross-compilation (x64 host building for aarch64)
+        if (!Os.isFamily(Os.FAMILY_MAC) && archName == 'arm64') {
+            args << '-DCMAKE_SYSTEM_NAME=Linux'
+            args << '-DCMAKE_SYSTEM_PROCESSOR=aarch64'
+            args << '-DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc'
+            args << '-DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++'
         }
 
         commandLine args
