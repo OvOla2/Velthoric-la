@@ -109,7 +109,7 @@ public final class PlatformConfigurator {
 
     private static void configureCurseForge(Project project, ModPublishExtension ext, VelthoricExtension velthoric, ModLoader loader, String mcVersion) {
         ext.curseforge(cf -> {
-            cf.getAccessToken().set(CredentialService.get(project, CredentialService.KEY_CURSEFORGE));
+            cf.getAccessToken().set(CredentialService.get(CredentialService.KEY_CURSEFORGE));
             cf.getProjectId().set(velthoric.getCurseProjectId());
             cf.getType().set(ReleaseType.STABLE);
             cf.getMinecraftVersions().add(mcVersion);
@@ -128,7 +128,7 @@ public final class PlatformConfigurator {
 
     private static void configureModrinth(Project project, ModPublishExtension ext, VelthoricExtension velthoric, ModLoader loader, String mcVersion) {
         ext.modrinth(mr -> {
-            mr.getAccessToken().set(CredentialService.get(project, CredentialService.KEY_MODRINTH));
+            mr.getAccessToken().set(CredentialService.get(CredentialService.KEY_MODRINTH));
             mr.getProjectId().set(velthoric.getModrinthProjectId());
             mr.getType().set(ReleaseType.BETA);
             mr.getMinecraftVersions().add(mcVersion);

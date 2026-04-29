@@ -80,17 +80,6 @@ public abstract class VelthoricExtension {
     public abstract Property<Boolean> getDryRun();
 
     /**
-     * Controls whether to configure the Cloudsmith Maven repository.
-     * <p>
-     * If {@code true}, the plugin will attempt to configure the 'maven-publish' extension
-     * with Velthoric's Cloudsmith credentials.
-     * <p>
-     * Defaults to {@code false} to prevent accidental snapshots or private uploads.
-     */
-    @Input
-    public abstract Property<Boolean> getEnableCloudsmith();
-
-    /**
      * The Project ID used for CurseForge uploads.
      * <p>
      * Defaults to the main Velthoric ID ("1367260"), but can be overridden if a submodule
@@ -120,7 +109,6 @@ public abstract class VelthoricExtension {
         getLoader().convention("common");
         getDisplayName().convention("Common"); // Fallback if loader strategy fails or is common
         getDryRun().convention(false);
-        getEnableCloudsmith().convention(false); // Default: Don't publish to Cloudsmith
 
         // Default IDs for the Velthoric project
         getCurseProjectId().convention("1367260");

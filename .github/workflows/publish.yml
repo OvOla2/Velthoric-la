@@ -1,0 +1,102 @@
+name: Publish Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  # Job 1: Build native libraries for all supported platforms
+  build-natives:
+    name: Build Native (${{ matrix.target_os }} - ${{ matrix.target_arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            target_os: win
+            target_arch: x86_64
+            ext: dll
+          - os: ubuntu-22.04
+            target_os: linux
+            target_arch: x86_64
+            ext: so
+          - os: ubuntu-22.04
+            target_os: linux
+            target_arch: aarch64
+            cross_compile: true
+            ext: so
+          - os: macos-14
+            target_os: osx
+            target_arch: x86_64
+            ext: dylib
+          - os: macos-14
+            target_os: osx
+            target_arch: aarch64
+            ext: dylib
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Install Cross-Compiler
+        if: matrix.cross_compile
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Grant Execute Permissions
+        run: chmod +x gradlew
+
+      - name: Build Native
+        run: ./gradlew :vx-native:cmakeBuild -PtargetArch=${{ matrix.target_arch }} -PnativeOnly=true
+        shell: bash
+
+      - name: Prepare Artifact
+        run: |
+          mkdir -p dist/natives/${{ matrix.target_os }}/${{ matrix.target_arch }}
+          find vx-native/src/main/cpp/build -name "*.${{ matrix.ext }}" -exec cp {} dist/natives/${{ matrix.target_os }}/${{ matrix.target_arch }}/vxnative.${{ matrix.ext }} \;
+        shell: bash
+
+      - name: Upload Native
+        uses: actions/upload-artifact@v4
+        with:
+          name: vxnative-${{ matrix.target_os }}-${{ matrix.target_arch }}
+          path: dist/*
+          retention-days: 1
+
+  # Job 2: Assemble the final Mod JARs and publish
+  publish-mod:
+    name: Publish to CurseForge & Modrinth
+    needs: build-natives
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Download Native Binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: vx-native/prebuilt-natives
+          merge-multiple: true
+
+      - name: Grant Execute Permissions
+        run: chmod +x gradlew
+
+      - name: Publish
+        run: ./gradlew build publishVelthoric -x :vx-native:cmakeBuild
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          CURSEFORGE_TOKEN: ${{ secrets.CURSEFORGE_TOKEN }}
