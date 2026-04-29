@@ -1,0 +1,97 @@
+cmake_minimum_required(VERSION 3.14)
+project(vxnative)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Configuration
+if(NOT JOLT_JNI_VERSION)
+    message(FATAL_ERROR "JOLT_JNI_VERSION not set! Please pass it via -DJOLT_JNI_VERSION=...")
+endif()
+
+set(RELEASE_URL "https://github.com/xI-Mx-Ix/vx-jolt-jni/releases/download/${JOLT_JNI_VERSION}")
+
+# Directories for external dependencies
+set(EXTERNAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external")
+set(INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
+file(MAKE_DIRECTORY ${EXTERNAL_DIR})
+file(MAKE_DIRECTORY ${INCLUDE_DIR})
+
+# Header Download & Extraction
+set(HEADERS_ZIP "${EXTERNAL_DIR}/jolt-headers.zip")
+if(NOT EXISTS "${INCLUDE_DIR}/Jolt/Jolt.h")
+    message(STATUS "Downloading Jolt headers from ${RELEASE_URL}...")
+    file(DOWNLOAD "${RELEASE_URL}/jolt-headers-${JOLT_JNI_VERSION}.zip" "${HEADERS_ZIP}" SHOW_PROGRESS)
+    
+    message(STATUS "Extracting headers to ${INCLUDE_DIR}...")
+    execute_process(COMMAND ${CMAKE_COMMAND} -E tar xf "${HEADERS_ZIP}" WORKING_DIRECTORY "${INCLUDE_DIR}")
+endif()
+
+# Native Library Download
+if(WIN32)
+    set(LIB_FILENAME "joltjni-${JOLT_JNI_VERSION}-windows-x64-ReleaseDp")
+    set(DLL_NAME "${LIB_FILENAME}.dll")
+    set(LIB_NAME "${LIB_FILENAME}.lib")
+    
+    if(NOT EXISTS "${EXTERNAL_DIR}/${DLL_NAME}")
+        message(STATUS "Downloading ${DLL_NAME}...")
+        file(DOWNLOAD "${RELEASE_URL}/${DLL_NAME}" "${EXTERNAL_DIR}/${DLL_NAME}" SHOW_PROGRESS)
+    endif()
+    if(NOT EXISTS "${EXTERNAL_DIR}/${LIB_NAME}")
+        message(STATUS "Downloading ${LIB_NAME}...")
+        file(DOWNLOAD "${RELEASE_URL}/${LIB_NAME}" "${EXTERNAL_DIR}/${LIB_NAME}" SHOW_PROGRESS)
+    endif()
+
+    add_library(joltjni SHARED IMPORTED)
+    set_target_properties(joltjni PROPERTIES
+        IMPORTED_LOCATION "${EXTERNAL_DIR}/${DLL_NAME}"
+        IMPORTED_IMPLIB "${EXTERNAL_DIR}/${LIB_NAME}"
+        INTERFACE_INCLUDE_DIRECTORIES "${INCLUDE_DIR}"
+    )
+elseif(APPLE)
+    # MacOS handling (x64 for example)
+    set(DYLIB_NAME "joltjni-${JOLT_JNI_VERSION}-macos-x64-ReleaseDp.dylib")
+    if(NOT EXISTS "${EXTERNAL_DIR}/${DYLIB_NAME}")
+        file(DOWNLOAD "${RELEASE_URL}/${DYLIB_NAME}" "${EXTERNAL_DIR}/${DYLIB_NAME}" SHOW_PROGRESS)
+    endif()
+    add_library(joltjni SHARED IMPORTED)
+    set_target_properties(joltjni PROPERTIES
+        IMPORTED_LOCATION "${EXTERNAL_DIR}/${DYLIB_NAME}"
+        INTERFACE_INCLUDE_DIRECTORIES "${INCLUDE_DIR}"
+    )
+else()
+    # Linux handling (x64 for example)
+    set(SO_NAME "joltjni-${JOLT_JNI_VERSION}-linux-x64-ReleaseDp.so")
+    if(NOT EXISTS "${EXTERNAL_DIR}/${SO_NAME}")
+        file(DOWNLOAD "${RELEASE_URL}/${SO_NAME}" "${EXTERNAL_DIR}/${SO_NAME}" SHOW_PROGRESS)
+    endif()
+    add_library(joltjni SHARED IMPORTED)
+    set_target_properties(joltjni PROPERTIES
+        IMPORTED_LOCATION "${EXTERNAL_DIR}/${SO_NAME}"
+        INTERFACE_INCLUDE_DIRECTORIES "${INCLUDE_DIR}"
+    )
+endif()
+
+# JNI Setup
+find_package(JNI REQUIRED)
+
+# Define vxnative Library
+add_library(vxnative SHARED vxnative.cpp)
+
+target_include_directories(vxnative PRIVATE 
+    ${JNI_INCLUDE_DIRS}
+    ${INCLUDE_DIR}
+)
+
+target_compile_definitions(vxnative PRIVATE 
+    JPH_DOUBLE_PRECISION 
+    JPH_SHARED_LIBRARY
+    JPH_OBJECT_STREAM
+    JPH_USE_CPU_COMPUTE
+    JPH_NO_DEBUG
+)
+
+target_link_libraries(vxnative PRIVATE joltjni ${JNI_LIBRARIES})
+
+# Output naming
+set_target_properties(vxnative PROPERTIES OUTPUT_NAME "vxnative")

@@ -47,6 +47,9 @@ public class NativeManager {
             // Second, load the Jolt physics engine.
             NativeJolt.initialize(extractionPath);
 
+            // Third, load the custom vxnative library.
+            NativeVelthoric.initialize(extractionPath);
+
             areNativesInitialized = true;
             LOGGER.info("All Velthoric native libraries initialized successfully.");
         } catch (Exception e) {

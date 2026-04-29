@@ -1,3 +1,5 @@
+import org.apache.tools.ant.taskdefs.condition.Os
+
 plugins {
     id 'java-library'
 }
@@ -113,9 +115,62 @@ processResources {
         }
     }
 
+    def buildDir = file("src/main/cpp/build")
+    def osName = Os.isFamily(Os.FAMILY_WINDOWS) ? "win" : (Os.isFamily(Os.FAMILY_MAC) ? "osx" : "linux")
+    
+    // Architecture detection
+    def currentArch = System.getProperty("os.arch")
+    def archFolder = (currentArch == "amd64" || currentArch == "x86_64") ? "x86_64" : "aarch64"
+
+    // Include the built vxnative library
+    from(buildDir) {
+        // Find the library anywhere in the build tree (handles MSVC vs Unix differences)
+        include "**/*.dll", "**/*.so", "**/*.dylib"
+        
+        // Normalize the path for the final JAR resources
+        eachFile { fcd ->
+            // Filter to only include the main library, ignoring build artifacts or Jolt dependencies
+            if (fcd.name.startsWith("vxnative") || fcd.name.startsWith("libvxnative")) {
+                fcd.path = "natives/${osName}/${archFolder}/vxnative" + (osName == "win" ? ".dll" : (osName == "osx" ? ".dylib" : ".so"))
+            } else {
+                fcd.exclude()
+            }
+        }
+        includeEmptyDirs = false
+    }
+
     // If a file is found in multiple zips, we just warn instead of failing.
     duplicatesStrategy = DuplicatesStrategy.WARN
 }
+
+// Native Build Tasks
+tasks.register('cmakeConfigure', Exec) {
+    workingDir 'src/main/cpp'
+    // Ensure the build directory exists
+    doFirst {
+        file('src/main/cpp/build').mkdirs()
+    }
+    
+    if (Os.isFamily(Os.FAMILY_WINDOWS)) {
+        commandLine 'cmake', '-S', '.', '-B', 'build', '-G', 'Visual Studio 17 2022', '-A', 'x64', "-DJOLT_JNI_VERSION=${project.jolt_jni_version}"
+    } else {
+        commandLine 'cmake', '-S', '.', '-B', 'build', '-DCMAKE_BUILD_TYPE=Release', "-DJOLT_JNI_VERSION=${project.jolt_jni_version}"
+    }
+}
+
+tasks.register('cmakeBuild', Exec) {
+    dependsOn 'cmakeConfigure'
+    workingDir 'src/main/cpp'
+    commandLine 'cmake', '--build', 'build', '--config', 'Release'
+}
+
+// Triggered during Gradle sync to prepare headers and external libs for the IDE
+tasks.register('prepareNativeIDE') {
+    dependsOn 'cmakeConfigure'
+}
+
+// Integration into the standard build lifecycle
+processResources.dependsOn 'cmakeBuild'
 
 jar {
     archiveBaseName.set("vxnative")
