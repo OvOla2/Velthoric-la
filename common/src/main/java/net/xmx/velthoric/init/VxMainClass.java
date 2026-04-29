@@ -9,6 +9,9 @@ import net.fabricmc.api.Environment;
 import net.xmx.velthoric.builtin.VxRegisteredBodies;
 import net.xmx.velthoric.init.registry.KeyMappings;
 import net.xmx.velthoric.init.registry.ModRegistries;
+import net.xmx.velthoric.natives.impl.NativeJolt;
+import net.xmx.velthoric.natives.impl.NativeVelthoric;
+import net.xmx.velthoric.natives.impl.NativeZstd;
 import net.xmx.velthoric.natives.systems.NativeManager;
 import net.xmx.velthoric.network.VxPacketRegistry;
 import net.xmx.velthoric.core.physics.VxPhysicsBootstrap;
@@ -36,6 +39,12 @@ public class VxMainClass {
         VxRegisteredBodies.register();
         VxPacketRegistry.registerPackets();
         RegisterEvents.register();
+
+        // Register native libraries in order of dependency
+        NativeManager.register(new NativeZstd());
+        NativeManager.register(new NativeJolt());
+        NativeManager.register(new NativeVelthoric());
+
         NativeManager.initialize();
         VxPhysicsBootstrap.initialize();
     }
