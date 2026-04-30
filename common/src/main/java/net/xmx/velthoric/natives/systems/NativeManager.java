@@ -6,6 +6,7 @@ package net.xmx.velthoric.natives.systems;
 
 import dev.architectury.platform.Platform;
 import net.xmx.velthoric.natives.NativeLoader;
+import net.xmx.velthoric.natives.VxNativeLibrary;
 import net.xmx.velthoric.natives.os.Arch;
 import net.xmx.velthoric.natives.os.OS;
 import net.xmx.velthoric.natives.os.UnsupportedOperatingSystemException;
@@ -13,6 +14,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Central manager for loading all required native libraries for Velthoric.
@@ -24,13 +27,19 @@ import java.nio.file.Path;
 public class NativeManager {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("Velthoric Native Manager");
+    private static final List<VxNativeLibrary> LIBRARIES = new ArrayList<>();
     private static volatile boolean areNativesInitialized = false;
 
     /**
-     * Initializes and loads all required native libraries.
-     * This method is synchronized and idempotent, ensuring that loading only occurs once.
-     * It determines a common extraction path and delegates the loading of each
-     * specific library to its respective manager.
+     * Registers a new native library to be loaded during initialization.
+     * @param library The library to register.
+     */
+    public static void register(VxNativeLibrary library) {
+        LIBRARIES.add(library);
+    }
+
+    /**
+     * Initializes and loads all registered native libraries.
      */
     public static synchronized void initialize() {
         if (areNativesInitialized) {
@@ -40,48 +49,35 @@ public class NativeManager {
         LOGGER.info("Initializing Velthoric native libraries...");
         Path extractionPath = Platform.getGameFolder().resolve("velthoric").resolve("natives");
 
-        try {
-            // First, load Zstd, as it's a general-purpose utility.
-            NativeZstd.initialize(extractionPath);
-
-            // Second, load the Jolt physics engine.
-            NativeJolt.initialize(extractionPath);
-
-            areNativesInitialized = true;
-            LOGGER.info("All Velthoric native libraries initialized successfully.");
-        } catch (Exception e) {
-            LOGGER.error("A critical error occurred while loading native libraries. Velthoric may not function correctly.", e);
-            // Re-throw as a runtime exception to halt initialization.
-            throw new RuntimeException("Failed to initialize Velthoric natives", e);
-        }
-    }
-
-    /**
-     * Loads a specific native library using a standardized pathing scheme.
-     *
-     * @param extractionPath The root directory to extract the library to.
-     * @param libraryName The simple name of the library (e.g., "joltjni", "zstd-jni").
-     * @throws UnsupportedOperatingSystemException if the current platform is not supported.
-     */
-    static void loadLibrary(Path extractionPath, String libraryName) {
         OS os = OS.detect();
         Arch arch = Arch.detect();
 
-        // Ensure the current platform is one of the explicitly supported ones.
         if (os == null || arch == null) {
             throw new UnsupportedOperatingSystemException(
                     "Unsupported platform: " + System.getProperty("os.name") + " (" + System.getProperty("os.arch") + ")"
             );
         }
 
-        // Generate the platform-specific library file name (e.g., "libjoltjni.so", "joltjni.dll").
-        String libFileName = System.mapLibraryName(libraryName);
+        try {
+            for (VxNativeLibrary lib : LIBRARIES) {
+                loadLibrary(extractionPath, lib, os, arch);
+            }
 
-        // Construct the path to the resource inside the JAR based on the new, clean structure.
-        String resourcePath = String.format("/natives/%s/%s/%s", os.folder, arch.folder, libFileName);
+            areNativesInitialized = true;
+            LOGGER.info("All Velthoric native libraries initialized successfully.");
+        } catch (Exception e) {
+            LOGGER.error("A critical error occurred while loading native libraries.", e);
+            throw new RuntimeException("Failed to initialize Velthoric natives", e);
+        }
+    }
 
-        LOGGER.debug("Attempting to load '{}' from resource path '{}'", libFileName, resourcePath);
+    private static void loadLibrary(Path extractionPath, VxNativeLibrary lib, OS os, Arch arch) {
+        String libFileName = lib.getLibraryFileName();
+        String resourcePath = lib.getResourcePath(os, arch);
+
+        LOGGER.debug("Loading native library: {} ({})", lib.getName(), libFileName);
         NativeLoader.load(extractionPath, resourcePath, libFileName);
+        lib.onLoad();
     }
 
     /**

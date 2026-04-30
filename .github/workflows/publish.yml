@@ -1,9 +1,6 @@
-name: Nightly Build
+name: Publish Release
 
 on:
-  push:
-    branches:
-      - master
   workflow_dispatch:
 
 jobs:
@@ -37,11 +34,9 @@ jobs:
             ext: dylib
     runs-on: ${{ matrix.os }}
     steps:
-      # Step 1: Download the source code
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # Step 2: Set up Java 21 for Gradle
       - name: Setup Java 21
         uses: actions/setup-java@v4
         with:
@@ -49,31 +44,25 @@ jobs:
           distribution: 'temurin'
           cache: 'gradle'
 
-      # Step 3: Install aarch64 cross-compiler (Linux cross-compile only)
       - name: Install Cross-Compiler
         if: matrix.cross_compile
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
-      # Step 4: Ensure the Gradle wrapper is executable
       - name: Grant Execute Permissions
         run: chmod +x gradlew
 
-      # Step 5: Build the native C++ library for the current matrix target
       - name: Build Native
         run: ./gradlew :vx-native:cmakeBuild -PtargetArch=${{ matrix.target_arch }} -PnativeOnly=true
         shell: bash
 
-      # Step 6: Move the binary to a structured directory for later assembly
       - name: Prepare Artifact
         run: |
           mkdir -p dist/natives/${{ matrix.target_os }}/${{ matrix.target_arch }}
-          # Find the library (handles Release/ subfolder in MSVC)
           find vx-native/src/main/cpp/build -name "*.${{ matrix.ext }}" -exec cp {} dist/natives/${{ matrix.target_os }}/${{ matrix.target_arch }}/vxnative.${{ matrix.ext }} \;
         shell: bash
 
-      # Step 7: Upload the binary as an Actions artifact (persists for 1 day)
       - name: Upload Native
         uses: actions/upload-artifact@v4
         with:
@@ -81,19 +70,15 @@ jobs:
           path: dist/*
           retention-days: 1
 
-  # Job 2: Assemble the final Mod JARs including all native binaries
-  build-mod:
-    name: Compile and Release
+  # Job 2: Assemble the final Mod JARs and publish
+  publish-mod:
+    name: Publish to CurseForge & Modrinth
     needs: build-natives
     runs-on: ubuntu-latest
-    permissions:
-      contents: write # Required to update the release tag and upload files
     steps:
-      # Step 1: Download the source code
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # Step 2: Set up Java 21 with Gradle caching for faster builds
       - name: Setup Java 21
         uses: actions/setup-java@v4
         with:
@@ -101,40 +86,17 @@ jobs:
           distribution: 'temurin'
           cache: 'gradle'
 
-      # Step 3: Download all native binaries built in the previous job
       - name: Download Native Binaries
         uses: actions/download-artifact@v4
         with:
           path: vx-native/prebuilt-natives
           merge-multiple: true
 
-      # Step 4: Ensure the Gradle wrapper is executable
       - name: Grant Execute Permissions
         run: chmod +x gradlew
 
-      # Step 5: Run the main build process, skipping native compilation since we already have the binaries
-      - name: Build with Gradle
-        run: ./gradlew build -x :vx-native:cmakeBuild
-
-      # Step 6: Upload internal artifacts (stored in the Actions tab for 7 days)
-      - name: Upload Build Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: Velthoric-Build-${{ github.sha }}
-          path: |
-            fabric/build/libs/*.jar
-            neoforge/build/libs/*.jar
-          retention-days: 7
-
-      # Step 7: Create or update the public "nightly" pre-release
-      # This will overwrite the files under the "nightly" tag on every push
-      - name: Update Nightly Pre-Release
-        uses: marvinpinto/action-automatic-releases@latest
-        with:
-          repo_token: "${{ secrets.GITHUB_TOKEN }}"
-          automatic_release_tag: "nightly"
-          prerelease: true
-          title: "Development Build (Nightly)"
-          files: |
-            fabric/build/libs/*.jar
-            neoforge/build/libs/*.jar
+      - name: Publish
+        run: ./gradlew build publishVelthoric -x :vx-native:cmakeBuild
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          CURSEFORGE_TOKEN: ${{ secrets.CURSEFORGE_TOKEN }}

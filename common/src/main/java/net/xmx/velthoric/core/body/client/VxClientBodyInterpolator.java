@@ -12,8 +12,11 @@ import org.jetbrains.annotations.Nullable;
 
 /**
  * Handles the interpolation and extrapolation of physics body states for smooth rendering.
- * This class calculates the visual state of a body at a specific render time based on
- * the two most recent states received from the server.
+ * Uses adaptive delay calculation based on measured packet arrival intervals to minimize
+ * perceived latency while maintaining smooth visuals.
+ * <p>
+ * The adaptive delay targets staying just far enough behind the server to always have
+ * data to interpolate between, rather than using a fixed delay.
  *
  * @author xI-Mx-Ix
  */
@@ -22,17 +25,118 @@ public class VxClientBodyInterpolator {
     /**
      * The maximum time in seconds to extrapolate a body's position forward if no new state has arrived.
      */
-    private static final float MAX_EXTRAPOLATION_SECONDS = 1.25f;
+    private static final float MAX_EXTRAPOLATION_SECONDS = 0.5f;
 
     /**
      * The minimum squared velocity required to perform extrapolation, to prevent jitter when stopping.
      */
     private static final float EXTRAPOLATION_VELOCITY_THRESHOLD_SQ = 0.0001f;
 
+    /**
+     * Exponential moving average smoothing factor for adaptive delay calculation.
+     * Higher values react faster to network changes but may cause jitter.
+     */
+    private static final double DELAY_EMA_ALPHA = 0.15;
+
+    /**
+     * Safety multiplier applied to the measured inter-packet interval.
+     * 1.5x means we buffer 1.5 packet intervals worth of data (one full interval + 50% jitter margin).
+     */
+    private static final double DELAY_SAFETY_FACTOR = 1.5;
+
+    /**
+     * Minimum adaptive delay in nanoseconds (10ms). Below this, interpolation becomes
+     * unstable because there isn't enough data to interpolate between.
+     */
+    private static final long MIN_ADAPTIVE_DELAY_NS = 10_000_000L;
+
+    /**
+     * Maximum adaptive delay in nanoseconds (100ms). Above this, something is very wrong
+     * with the network and we cap the delay to avoid excessive visual lag.
+     */
+    private static final long MAX_ADAPTIVE_DELAY_NS = 100_000_000L;
+
+    /**
+     * The smoothed inter-packet arrival interval in nanoseconds (EMA).
+     * Initialized to 0, which signals that no measurement has been taken yet.
+     */
+    private double smoothedIntervalNanos = 0.0;
+
+    /**
+     * The smoothed jitter (variance) of inter-packet arrival times in nanoseconds.
+     * Used to add a dynamic safety margin to the interpolation delay.
+     */
+    private double smoothedJitterNanos = 0.0;
+
+    /**
+     * The timestamp of the last received state packet, used to measure arrival intervals.
+     */
+    private long lastPacketArrivalNanos = 0L;
+
+    /**
+     * The current adaptive interpolation delay in nanoseconds.
+     * This is dynamically computed from measured packet intervals and jitter.
+     */
+    private volatile long adaptiveDelayNanos = 30_000_000L; // Start with 30ms default
+
     // Temporary quaternion objects to avoid allocations during calculations.
     private final Quat tempFromRot = new Quat();
     private final Quat tempToRot = new Quat();
     private final Quat tempRenderRot = new Quat();
+
+    /**
+     * Records the arrival of a new state packet and updates the adaptive delay.
+     * Should be called from the packet handler when new body state data arrives.
+     *
+     * @param arrivalTimeNanos The client-side time when the packet was received (from VxClientClock).
+     */
+    public void onPacketReceived(long arrivalTimeNanos) {
+        if (lastPacketArrivalNanos > 0) {
+            long interval = arrivalTimeNanos - lastPacketArrivalNanos;
+
+            // Guard against negative intervals (clock reset) or absurdly large ones
+            if (interval > 0 && interval < 1_000_000_000L) {
+                if (smoothedIntervalNanos <= 0.0) {
+                    // First measurement: initialize directly
+                    smoothedIntervalNanos = interval;
+                    smoothedJitterNanos = interval * 0.25; // initial jitter estimate
+                } else {
+                    // Update EMA for interval and jitter
+                    double deviation = Math.abs(interval - smoothedIntervalNanos);
+                    smoothedJitterNanos = smoothedJitterNanos * (1.0 - DELAY_EMA_ALPHA) + deviation * DELAY_EMA_ALPHA;
+                    smoothedIntervalNanos = smoothedIntervalNanos * (1.0 - DELAY_EMA_ALPHA) + interval * DELAY_EMA_ALPHA;
+                }
+
+                // Adaptive delay = interval * safety_factor + jitter * 2
+                // This ensures we have enough buffered data to interpolate smoothly
+                long computedDelay = (long) (smoothedIntervalNanos * DELAY_SAFETY_FACTOR + smoothedJitterNanos * 2.0);
+                computedDelay = Math.max(MIN_ADAPTIVE_DELAY_NS, Math.min(MAX_ADAPTIVE_DELAY_NS, computedDelay));
+
+                // Smooth the final delay value to prevent sudden jumps
+                adaptiveDelayNanos = (long) (adaptiveDelayNanos * 0.85 + computedDelay * 0.15);
+            }
+        }
+        lastPacketArrivalNanos = arrivalTimeNanos;
+    }
+
+    /**
+     * Returns the current adaptive interpolation delay in nanoseconds.
+     *
+     * @return The delay in nanoseconds.
+     */
+    public long getAdaptiveDelayNanos() {
+        return adaptiveDelayNanos;
+    }
+
+    /**
+     * Resets the adaptive delay state. Called on disconnect or world change.
+     */
+    public void reset() {
+        smoothedIntervalNanos = 0.0;
+        smoothedJitterNanos = 0.0;
+        lastPacketArrivalNanos = 0L;
+        adaptiveDelayNanos = 30_000_000L;
+    }
 
     /**
      * Updates the interpolation target states for all bodies in the data store.
@@ -125,9 +229,12 @@ public class VxClientBodyInterpolator {
             // Only extrapolate if the time is within limits and the body has significant velocity.
             // This prevents overshooting when the body is meant to be stopping.
             if (extrapolationTime < MAX_EXTRAPOLATION_SECONDS && velSq > EXTRAPOLATION_VELOCITY_THRESHOLD_SQ) {
-                c.posX[i] = c.state1_posX[i] + velX * extrapolationTime;
-                c.posY[i] = c.state1_posY[i] + velY * extrapolationTime;
-                c.posZ[i] = c.state1_posZ[i] + velZ * extrapolationTime;
+                // Use a decay factor to smoothly reduce extrapolation confidence over time
+                double decay = Math.max(0.0, 1.0 - extrapolationTime / MAX_EXTRAPOLATION_SECONDS);
+                double blendedTime = extrapolationTime * decay;
+                c.posX[i] = c.state1_posX[i] + velX * blendedTime;
+                c.posY[i] = c.state1_posY[i] + velY * blendedTime;
+                c.posZ[i] = c.state1_posZ[i] + velZ * blendedTime;
             } else {
                 // If extrapolating too far or velocity is negligible, clamp to the last known position.
                 c.posX[i] = c.state1_posX[i];

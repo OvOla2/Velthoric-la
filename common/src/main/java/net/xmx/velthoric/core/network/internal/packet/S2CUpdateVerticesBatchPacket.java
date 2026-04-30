@@ -20,6 +20,9 @@ import java.nio.ByteBuffer;
  * <p>
  * Handles vertex data updates efficiently using direct memory buffers and Zstd compression,
  * avoiding object overhead for high-frequency soft body deformation updates.
+ * <p>
+ * Vertex history is cycled (state0 ← state1) on each update to support
+ * smooth interpolation of soft body deformations.
  *
  * @author xI-Mx-Ix
  */
@@ -57,6 +60,9 @@ public class S2CUpdateVerticesBatchPacket implements IVxNetPacket {
 
     /**
      * Decompresses and updates the vertex arrays in the client data store.
+     * <p>
+     * Cycles vertex history (state0 <- state1) before writing new data,
+     * enabling proper interpolation of soft body vertices.
      */
     @Override
     public void handle(NetworkManager.PacketContext context) {
@@ -99,6 +105,8 @@ public class S2CUpdateVerticesBatchPacket implements IVxNetPacket {
                         Integer index = manager.getStore().getIndexForNetworkId(netId);
                         VxClientBodyDataContainer c = manager.getStore().clientCurrent();
                         if (index != null && index < c.getCapacity()) {
+                            // Cycle vertex history for interpolation
+                            c.state0_vertexData[index] = c.state1_vertexData[index];
                             c.state1_vertexData[index] = verts;
                         }
                     }

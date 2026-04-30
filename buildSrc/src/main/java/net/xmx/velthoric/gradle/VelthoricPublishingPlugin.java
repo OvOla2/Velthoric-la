@@ -5,7 +5,6 @@
 package net.xmx.velthoric.gradle;
 
 import net.xmx.velthoric.gradle.internal.CredentialService;
-import net.xmx.velthoric.gradle.internal.MavenConfigurator;
 import net.xmx.velthoric.gradle.internal.PlatformConfigurator;
 import org.gradle.api.Plugin;
 import org.gradle.api.Project;
@@ -84,7 +83,7 @@ public class VelthoricPublishingPlugin implements Plugin<Project> {
                         .anyMatch(ext -> ext.getArtifact().isPresent() && !ext.getDryRun().get());
 
                 if (isRealRelease) {
-                    CredentialService.validate(project);
+                    CredentialService.validate();
                     project.getLogger().lifecycle("Velthoric Release Pipeline: Credentials verified. Completing upload...");
                 } else {
                     project.getLogger().lifecycle("Velthoric Release Pipeline: No active release detected (Dry Run or no artifacts). Skipping credential validation.");
@@ -132,8 +131,8 @@ public class VelthoricPublishingPlugin implements Plugin<Project> {
 
             // If Modrinth or CurseForge tokens are invalid/missing, we automatically switch to Dry Run.
             // This prevents build failures due to missing credentials and allows for safe testing.
-            String mrToken = CredentialService.get(p, CredentialService.KEY_MODRINTH);
-            String cfToken = CredentialService.get(p, CredentialService.KEY_CURSEFORGE);
+            String mrToken = CredentialService.get(CredentialService.KEY_MODRINTH);
+            String cfToken = CredentialService.get(CredentialService.KEY_CURSEFORGE);
 
             if (mrToken == null || cfToken == null) {
                 p.getLogger().lifecycle("Velthoric: Missing Modrinth or CurseForge tokens. Forcing DRY RUN for module '{}'.", p.getName());
@@ -141,9 +140,6 @@ public class VelthoricPublishingPlugin implements Plugin<Project> {
             }
 
             // --- Configuration ---
-
-            // Configure Cloudsmith Maven repository (only if enabled in extension)
-            MavenConfigurator.configure(p, extension);
 
             // Configure Modrinth and CurseForge via the dedicated strategy class
             PlatformConfigurator.configure(p, extension);
